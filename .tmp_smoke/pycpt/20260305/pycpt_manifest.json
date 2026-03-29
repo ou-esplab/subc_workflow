@@ -1,0 +1,18 @@
+{
+  "region": "TestRegion",
+  "fcstdate": "20260305",
+  "training_season": "Feb-Apr",
+  "case_dir": "/home/kpegion/projects/subc_workflow/.tmp_smoke/pycpt/20260305",
+  "plots_dir": "/home/kpegion/projects/subc_workflow/.tmp_smoke/pycpt/plots",
+  "files": [
+    "/home/kpegion/projects/subc_workflow/.tmp_smoke/pycpt/plots/pycpt_rpss_w1_TestRegion_Feb-Apr_03052026.png",
+    "/home/kpegion/projects/subc_workflow/.tmp_smoke/pycpt/plots/pycpt_rpss_w2_TestRegion_Feb-Apr_03052026.png",
+    "/home/kpegion/projects/subc_workflow/.tmp_smoke/pycpt/plots/pycpt_rpss_w3_TestRegion_Feb-Apr_03052026.png",
+    "/home/kpegion/projects/subc_workflow/.tmp_smoke/pycpt/plots/pycpt_rpss_w4_TestRegion_Feb-Apr_03052026.png",
+    "/home/kpegion/projects/subc_workflow/.tmp_smoke/pycpt/plots/bc_week1_GEFSv12_CPC_TestRegion_03052026.png",
+    "/home/kpegion/projects/subc_workflow/.tmp_smoke/pycpt/plots/bc_week2_GEFSv12_CPC_TestRegion_03052026.png",
+    "/home/kpegion/projects/subc_workflow/.tmp_smoke/pycpt/plots/bc_week3_GEFSv12_CPC_TestRegion_03052026.png",
+    "/home/kpegion/projects/subc_workflow/.tmp_smoke/pycpt/plots/bc_week4_GEFSv12_CPC_TestRegion_03052026.png"
+  ],
+  "timestamp": "2026-03-29T22:55:17.020521Z"
+}

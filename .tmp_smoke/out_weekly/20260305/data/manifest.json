@@ -1,0 +1,11 @@
+{
+  "fcstdate": "20260305",
+  "models": [],
+  "n_week": 0,
+  "n_vars": 0,
+  "out_images_dir": "/home/kpegion/projects/subc_workflow/.tmp_smoke/out_weekly/20260305/images",
+  "out_data_dir": "/home/kpegion/projects/subc_workflow/.tmp_smoke/out_weekly/20260305/data",
+  "smoke_mode": true,
+  "note": "No realtime inputs found; products stage completed in smoke mode.",
+  "timestamp": "2026-03-29T20:18:36.070145Z"
+}

@@ -1,0 +1,10 @@
+{
+  "group": "EMC",
+  "server_model": "GEFSv12_CPC",
+  "local_model": "GEFSv12_CPC",
+  "variable": "pr",
+  "datatype": "forecast",
+  "forecast_date": "20260305",
+  "target_dir": "/home/kpegion/projects/subc_workflow/.tmp_smoke/rt/EMC-GEFSv12_CPC/forecast/pr",
+  "mode": "stub"
+}

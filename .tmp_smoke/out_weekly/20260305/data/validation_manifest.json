@@ -1,0 +1,15 @@
+{
+  "fcstdate": "20260305",
+  "checked_at": "2026-03-29T20:18:35.071757Z",
+  "records": [
+    {
+      "group": "EMC",
+      "server_model": "GEFSv12_CPC",
+      "local_model": "GEFSv12_CPC",
+      "variable": "pr",
+      "pattern": "/home/kpegion/projects/subc_workflow/.tmp_smoke/rt/EMC-GEFSv12_CPC/forecast/pr/pr_EMC-GEFSv12_CPC_20260305*.daily.nc",
+      "matches": [],
+      "ok": false
+    }
+  ]
+}

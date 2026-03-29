@@ -1,0 +1,67 @@
++ 2026-03-29 15:18:36 pycpt_run.sh: FCSTDATE=20260305
++ 2026-03-29 15:18:36 pycpt_run.sh: CONFIG_IN=/home/kpegion/projects/subc_workflow/.tmp_smoke/config.smoke.yaml
+++ 2026-03-29 15:18:36 pycpt_run.sh: python3 -c 'import os,sys; print(os.path.abspath(sys.argv[1]))' /home/kpegion/projects/subc_workflow/.tmp_smoke/config.smoke.yaml
++ 2026-03-29 15:18:36 pycpt_run.sh: CONFIG=/home/kpegion/projects/subc_workflow/.tmp_smoke/config.smoke.yaml
++ 2026-03-29 15:18:36 pycpt_run.sh: [[ -z 20260305 ]]
++ 2026-03-29 15:18:36 pycpt_run.sh: [[ -z /home/kpegion/projects/subc_workflow/.tmp_smoke/config.smoke.yaml ]]
++ 2026-03-29 15:18:36 pycpt_run.sh: [[ ! -f /home/kpegion/projects/subc_workflow/.tmp_smoke/config.smoke.yaml ]]
++ 2026-03-29 15:18:36 pycpt_run.sh: echo '==> [pycpt_run] Using FCSTDATE=20260305 CONFIG=/home/kpegion/projects/subc_workflow/.tmp_smoke/config.smoke.yaml'
+==> [pycpt_run] Using FCSTDATE=20260305 CONFIG=/home/kpegion/projects/subc_workflow/.tmp_smoke/config.smoke.yaml
++ 2026-03-29 15:18:36 pycpt_run.sh: readarray -t LINES
+++ 2026-03-29 15:18:36 pycpt_run.sh: python3 -c '
+import sys, signal, yaml, traceback
+signal.signal(signal.SIGPIPE, signal.SIG_DFL)
+try:
+    cfg=yaml.safe_load(open(sys.argv[1])) or {}
+    def to_negpos(lons): return [ (lo-360 if (lo is not None and lo>180) else lo) for lo in lons ]
+    for r in cfg.get("regions", []):
+        name = r.get("name","<no-name>")
+        p = r.get("pycpt") or {}
+        lat, lon = p.get("lat"), p.get("lon")
+        if not lat or not lon:
+            subx = r.get("subx") or {}
+            slat, slon = subx.get("lat"), subx.get("lon")
+            if slat and len(slat)==2 and slon and len(slon)==2:
+                lat, lon = slat, to_negpos(slon)
+            else:
+                lat, lon = [None,None], [None,None]
+        print(f"{name}|{lat[0]} {lat[1]}|{lon[0]} {lon[1]}")
+except Exception:
+    traceback.print_exc()
+    sys.exit(1)
+' /home/kpegion/projects/subc_workflow/.tmp_smoke/config.smoke.yaml
++++ 2026-03-29 15:18:36 pycpt_run.sh: sed 's/^/[PYERR] /'
+++ 2026-03-29 15:18:36 pycpt_run.sh: python3 -c '
+import sys, signal, yaml, traceback
+signal.signal(signal.SIGPIPE, signal.SIG_DFL)
+try:
+    print((yaml.safe_load(open(sys.argv[1])) or {})["pycpt"]["training_season"])
+except Exception:
+    traceback.print_exc()
+    sys.exit(1)
+' /home/kpegion/projects/subc_workflow/.tmp_smoke/config.smoke.yaml
++++ 2026-03-29 15:18:36 pycpt_run.sh: sed 's/^/[PYERR] /'
++ 2026-03-29 15:18:36 pycpt_run.sh: SEAS=Feb-Apr
++ 2026-03-29 15:18:36 pycpt_run.sh: echo '==> [pycpt_run] Regions to run:'
+==> [pycpt_run] Regions to run:
++ 2026-03-29 15:18:36 pycpt_run.sh: for line in "${LINES[@]}"
++ 2026-03-29 15:18:36 pycpt_run.sh: echo '   TestRegion|0 13|-60 -73'
+   TestRegion|0 13|-60 -73
++ 2026-03-29 15:18:36 pycpt_run.sh: for line in "${LINES[@]}"
++ 2026-03-29 15:18:36 pycpt_run.sh: IFS='|'
++ 2026-03-29 15:18:36 pycpt_run.sh: read -r REG LATS LONS
++ 2026-03-29 15:18:36 pycpt_run.sh: [[ 0 13 == \N\o\n\e\ \N\o\n\e ]]
++ 2026-03-29 15:18:36 pycpt_run.sh: [[ -60 -73 == \N\o\n\e\ \N\o\n\e ]]
++ 2026-03-29 15:18:36 pycpt_run.sh: echo '==> [pycpt_run] Running PyCPT for region '\''TestRegion'\'' (LATS=0 13 LONS=-60 -73 SEAS=Feb-Apr)'
+==> [pycpt_run] Running PyCPT for region 'TestRegion' (LATS=0 13 LONS=-60 -73 SEAS=Feb-Apr)
++ 2026-03-29 15:18:36 pycpt_run.sh: stdbuf -oL -eL ./pycpt_s2s_realtime.py --regname TestRegion --lat_minmax 0 13 --lon_minmax -60 -73 --training_season Feb-Apr --fcstdate 20260305 --config /home/kpegion/projects/subc_workflow/.tmp_smoke/config.smoke.yaml
+Traceback (most recent call last):
+  File "/home/kpegion/projects/subc_workflow/./pycpt_s2s_realtime.py", line 195, in <module>
+    main()
+  File "/home/kpegion/projects/subc_workflow/./pycpt_s2s_realtime.py", line 86, in main
+    import pycpt
+ModuleNotFoundError: No module named 'pycpt'
+++ 2026-03-29 15:18:37 pycpt_run.sh: code=1
+++ 2026-03-29 15:18:37 pycpt_run.sh: echo '[ERROR] pycpt_run.sh failed (exit 1) at line 75'
+[ERROR] pycpt_run.sh failed (exit 1) at line 75
+++ 2026-03-29 15:18:37 pycpt_run.sh: exit 1

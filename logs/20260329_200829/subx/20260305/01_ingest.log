@@ -1,0 +1,50 @@
++ 2026-03-29 15:08:29 update_subx_fcsts.sh: FCSTDATE=20260305
++ 2026-03-29 15:08:29 update_subx_fcsts.sh: CONFIG_IN=/home/kpegion/projects/subc_workflow/.tmp_smoke/config.smoke.yaml
+++ 2026-03-29 15:08:29 update_subx_fcsts.sh: python3 -c 'import os,sys; print(os.path.abspath(sys.argv[1]))' /home/kpegion/projects/subc_workflow/.tmp_smoke/config.smoke.yaml
++ 2026-03-29 15:08:29 update_subx_fcsts.sh: CONFIG=/home/kpegion/projects/subc_workflow/.tmp_smoke/config.smoke.yaml
++ 2026-03-29 15:08:29 update_subx_fcsts.sh: [[ -z 20260305 ]]
++ 2026-03-29 15:08:29 update_subx_fcsts.sh: [[ -z /home/kpegion/projects/subc_workflow/.tmp_smoke/config.smoke.yaml ]]
++ 2026-03-29 15:08:29 update_subx_fcsts.sh: [[ ! -f /home/kpegion/projects/subc_workflow/.tmp_smoke/config.smoke.yaml ]]
++ 2026-03-29 15:08:29 update_subx_fcsts.sh: echo '==> [update_subx_fcsts] Start for FCSTDATE=20260305 CONFIG=/home/kpegion/projects/subc_workflow/.tmp_smoke/config.smoke.yaml'
+==> [update_subx_fcsts] Start for FCSTDATE=20260305 CONFIG=/home/kpegion/projects/subc_workflow/.tmp_smoke/config.smoke.yaml
+++ 2026-03-29 15:08:29 update_subx_fcsts.sh: command -v python3
++ 2026-03-29 15:08:29 update_subx_fcsts.sh: echo '==> PYTHON: /home/kpegion/miniconda3/bin/python3'
+==> PYTHON: /home/kpegion/miniconda3/bin/python3
++ 2026-03-29 15:08:29 update_subx_fcsts.sh: readarray -t CONFIG_LINES
+++ 2026-03-29 15:08:29 update_subx_fcsts.sh: python3 - /home/kpegion/projects/subc_workflow/.tmp_smoke/config.smoke.yaml
++++ 2026-03-29 15:08:29 update_subx_fcsts.sh: sed 's/^/[PYERR] /'
++ 2026-03-29 15:08:29 update_subx_fcsts.sh: MAXJOBS=1
++ 2026-03-29 15:08:29 update_subx_fcsts.sh: MODEL_SPECS=()
++ 2026-03-29 15:08:29 update_subx_fcsts.sh: for line in "${CONFIG_LINES[@]}"
++ 2026-03-29 15:08:29 update_subx_fcsts.sh: IFS='|'
++ 2026-03-29 15:08:29 update_subx_fcsts.sh: read -r kind field1 field2 field3 field4
++ 2026-03-29 15:08:29 update_subx_fcsts.sh: [[ MAXJOBS == \M\A\X\J\O\B\S ]]
++ 2026-03-29 15:08:29 update_subx_fcsts.sh: MAXJOBS=2
++ 2026-03-29 15:08:29 update_subx_fcsts.sh: for line in "${CONFIG_LINES[@]}"
++ 2026-03-29 15:08:29 update_subx_fcsts.sh: IFS='|'
++ 2026-03-29 15:08:29 update_subx_fcsts.sh: read -r kind field1 field2 field3 field4
++ 2026-03-29 15:08:29 update_subx_fcsts.sh: [[ MODEL == \M\A\X\J\O\B\S ]]
++ 2026-03-29 15:08:29 update_subx_fcsts.sh: [[ MODEL == \M\O\D\E\L ]]
++ 2026-03-29 15:08:29 update_subx_fcsts.sh: MODEL_SPECS+=("$line")
++ 2026-03-29 15:08:29 update_subx_fcsts.sh: [[ 1 -eq 0 ]]
++ 2026-03-29 15:08:29 update_subx_fcsts.sh: echo '==> [update_subx_fcsts] Downloading inputs for 1 models, max jobs=2'
+==> [update_subx_fcsts] Downloading inputs for 1 models, max jobs=2
++ 2026-03-29 15:08:29 update_subx_fcsts.sh: export SUBX_CONFIG=/home/kpegion/projects/subc_workflow/.tmp_smoke/config.smoke.yaml
++ 2026-03-29 15:08:29 update_subx_fcsts.sh: SUBX_CONFIG=/home/kpegion/projects/subc_workflow/.tmp_smoke/config.smoke.yaml
++ 2026-03-29 15:08:29 update_subx_fcsts.sh: job_count=0
++ 2026-03-29 15:08:29 update_subx_fcsts.sh: for spec in "${MODEL_SPECS[@]}"
++ 2026-03-29 15:08:29 update_subx_fcsts.sh: IFS='|'
++ 2026-03-29 15:08:29 update_subx_fcsts.sh: read -r _ group server_model local_model vars_csv
++ 2026-03-29 15:08:29 update_subx_fcsts.sh: IFS=,
++ 2026-03-29 15:08:29 update_subx_fcsts.sh: read -r -a vars
++ 2026-03-29 15:08:29 update_subx_fcsts.sh: echo '==> [update_subx_fcsts] Model EMC/GEFSv12_CPC -> GEFSv12_CPC vars=pr'
+==> [update_subx_fcsts] Model EMC/GEFSv12_CPC -> GEFSv12_CPC vars=pr
++ 2026-03-29 15:08:29 update_subx_fcsts.sh: for var in "${vars[@]}"
++ 2026-03-29 15:08:29 update_subx_fcsts.sh: (( ++job_count ))
++ 2026-03-29 15:08:29 update_subx_fcsts.sh: stdbuf -oL -eL /home/kpegion/projects/subc_workflow/download_subx_rtfcst.sh EMC GEFSv12_CPC pr forecast 20260305 GEFSv12_CPC
++ 2026-03-29 15:08:29 update_subx_fcsts.sh: ((  job_count % MAXJOBS == 0  ))
++ 2026-03-29 15:08:29 update_subx_fcsts.sh: wait
+[DL] group=EMC server_model=GEFSv12_CPC local_model=GEFSv12_CPC var=pr type=forecast fcst=20260305
+[DL] Stubbed download request written to /home/kpegion/projects/subc_workflow/.tmp_smoke/rt/EMC-GEFSv12_CPC/forecast/pr/pr_EMC-GEFSv12_CPC_20260305.download-request.json
++ 2026-03-29 15:08:30 update_subx_fcsts.sh: echo '==> [update_subx_fcsts] Done.'
+==> [update_subx_fcsts] Done.

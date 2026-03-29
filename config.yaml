@@ -1,0 +1,67 @@
+
+fcstdate: null
+lon_convention: "0_360"
+paths:
+  rt_root: /data/esplab/subc-backup
+  hc_root: /data/esplab/shared/model/initialized/subx/hindcast
+  out_weekly: /data/esplab/shared/model/initialized/subx/forecast/weekly
+  out_daily: /data/esplab/shared/model/initialized/subx/forecast/daily
+  pycpt_case_root: /data/esplab/shared/model/initialized/subx/forecast/weekly/pycpt
+  thresholds_template: /data/esplab/gbrown/GWSC/percentile{percentile}_{modelkey}_thres_{var}.nc
+  thresholds_gefs_pr: /data/esplab/gbrown/GWSC/percentile{percentile}_GEFSthres_pr.nc
+models:
+  - { group: EMC,  name: GEFSv12_CPC, vars: [tas, pr, zg], levels: [2m, sfc, 500] }
+  - { group: ESRL, name: FIMr1p1,     vars: [tas, pr, zg], levels: [2m, sfc, 500] }
+  - { group: RSMAS,name: CCSM4,       vars: [tas, pr, zg], levels: [2m, sfc, 500] }
+  - { group: GMAO, name: GEOS_V2p1_5daily, vars: [tas, pr, zg], levels: [2m, sfc, 500] }
+  - { group: ECCC, name: GEPS8,       vars: [tas, pr, zg], levels: [2m, sfc, 500] }
+  - { group: NCEP, name: CFSv2,       vars: [tas, pr, zg], levels: [2m, sfc, 500] }
+
+model_name_map:
+  GMAO-GEOS_V2p1_5daily: GEOS_V2p1
+  
+exceedance:
+  var: pr
+  model_id: EMC-GEFSv12_CPC
+  percentile: 95
+  window_days: 7
+  modelkey: GEFSthres
+regions:
+  - name: Venezuela
+    subx:  { lon: [287, 300], lat: [0, 13] }
+    pycpt: { lon: [-60, -73], lat: [0, 13] }
+  - name: Iran
+    subx:  { lon: [40, 64],  lat: [24, 40] }
+    pycpt: { lon: [40, 64],  lat: [24, 40] }
+  - name: Mexico
+    subx:  { lon: [242, 263], lat: [20, 33] }
+    pycpt: { lon: [-118, -97], lat: [20, 33] }
+pycpt:
+  mos: CCA
+  training_season: Feb-Apr
+  # Optional local-data mode to avoid downloads in pycpt_s2s_realtime.py.
+  use_local_data: false
+  local_data_dir: null
+  # Optional mode to build PyCPT predictor files directly from local SubX archive:
+  #   <root>/<GROUP>-<MODEL>/<forecast,hindcast>/<var>/<var>_<GROUP>-<MODEL>_YYYYMMDD.daily.nc
+  use_local_subx_predictor: false
+  local_subx_root: /data/esplab/subc-backup
+  local_subx_model_id: EMC-GEFSv12_CPC
+  local_data_strict: false
+  force_download: false
+  # Optional cptdl target keyword used for seasonal-length checks; defaults to init month.
+  target: null
+email:
+  enabled: false
+  smtp_host: smtp.example.org
+  smtp_port: 587
+  use_tls: true
+  username: ${SMTP_USER}
+  password: ${SMTP_PASS}
+  from: kpegion@ou.edu
+  to: [kpegion@ou.edu]
+validation:
+  policy: fail_on_missing
+  expect_any_member: true
+concurrency:
+  downloads: 3
