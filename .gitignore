@@ -1,0 +1,18 @@
+# Python cache and build artifacts
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.pytest_cache/
+
+# Notebook/editor artifacts
+.ipynb_checkpoints/
+
+# Workflow-generated runtime outputs
+.tmp_smoke/
+logs/
+
+# Optional local env files
+.env
+.venv/
+venv/
