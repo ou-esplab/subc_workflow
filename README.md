@@ -21,6 +21,32 @@ Run the full workflow through the Python runner. This is the canonical entrypoin
 python3 runners/cli.py --system subx --config config.yaml --init YYYYMMDD
 ```
 
+Runner options aligned with the NMME workflow:
+
+- Dry-run products stage:
+
+```bash
+python3 runners/cli.py --system subx --config config.yaml --init YYYYMMDD --stages products --products-dry-run
+```
+
+- Run PyCPT only for selected regions:
+
+```bash
+python3 runners/cli.py --system subx --config config.yaml --init YYYYMMDD --stages pycpt --pycpt-only Mexico Iran
+```
+
+- Run PyCPT in dry-run mode (data prep only, skip CPT eval):
+
+```bash
+python3 runners/cli.py --system subx --config config.yaml --init YYYYMMDD --stages pycpt --pycpt-dry-run
+```
+
+- Run regional PyCPT jobs in parallel:
+
+```bash
+python3 runners/cli.py --system subx --config config.yaml --init YYYYMMDD --stages pycpt --pycpt-max-workers 3
+```
+
 Run the shell wrapper only when you want environment activation handled before calling the runner:
 
 ```bash

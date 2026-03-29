@@ -9,6 +9,8 @@ set -x
 FCSTDATE="${1:-}"
 CONFIG_IN="${2:-config.yaml}"
 CONFIG="$(python3 -c 'import os,sys; print(os.path.abspath(sys.argv[1]))' "$CONFIG_IN")"
+PYCPT_ONLY_RAW="${PYCPT_ONLY:-}"
+PYCPT_MAX_WORKERS="${PYCPT_MAX_WORKERS:-1}"
 
 # Resolve forecast date (latest Thursday if not provided)
 if [[ -z "${FCSTDATE:-}" ]]; then
@@ -32,9 +34,18 @@ import sys, signal, yaml, traceback
 signal.signal(signal.SIGPIPE, signal.SIG_DFL)
 try:
     cfg=yaml.safe_load(open(sys.argv[1])) or {}
+    only_raw = (sys.argv[2] or "").strip()
+    only = set()
+    if only_raw:
+        for token in only_raw.replace(",", " ").split():
+            token = token.strip()
+            if token:
+                only.add(token)
     def to_negpos(lons): return [ (lo-360 if (lo is not None and lo>180) else lo) for lo in lons ]
     for r in cfg.get("regions", []):
         name = r.get("name","<no-name>")
+        if only and name not in only:
+            continue
         p = r.get("pycpt") or {}
         lat, lon = p.get("lat"), p.get("lon")
         if not lat or not lon:
@@ -48,7 +59,7 @@ try:
 except Exception:
     traceback.print_exc()
     sys.exit(1)
-' "$CONFIG" 2> >(sed 's/^/[PYERR] /' >&2)
+' "$CONFIG" "$PYCPT_ONLY_RAW" 2> >(sed 's/^/[PYERR] /' >&2)
 )
 
 SEAS="$(
@@ -66,8 +77,18 @@ except Exception:
 echo "==> [pycpt_run] Regions to run:"
 for line in "${LINES[@]}"; do echo "   $line"; done
 
+if ! [[ "$PYCPT_MAX_WORKERS" =~ ^[0-9]+$ ]] || [[ "$PYCPT_MAX_WORKERS" -lt 1 ]]; then
+  echo "[FATAL] Invalid PYCPT_MAX_WORKERS='$PYCPT_MAX_WORKERS' (must be >=1 integer)" >&2
+  exit 2
+fi
+
+if [[ "${#LINES[@]}" -eq 0 ]]; then
+  echo "[WARN] No regions selected for PyCPT run."
+  exit 0
+fi
+
 # Check for smoke mode in config
-PYCPT_SMOKE_MODE="$(
+CONFIG_SMOKE_MODE="$(
 python3 -c '
 import sys, signal, yaml, traceback
 signal.signal(signal.SIGPIPE, signal.SIG_DFL)
@@ -81,17 +102,26 @@ except Exception:
 ' "$CONFIG" 2> >(sed 's/^/[PYERR] /' >&2)
 )"
 
+# Optional env override from runner
+if [[ -n "${PYCPT_SMOKE_MODE:-}" ]] && [[ "${PYCPT_SMOKE_MODE}" =~ ^[01]$ ]]; then
+  FINAL_SMOKE_MODE="$PYCPT_SMOKE_MODE"
+else
+  FINAL_SMOKE_MODE="$CONFIG_SMOKE_MODE"
+fi
+
 # Build pycpt_s2s_realtime.py command with optional smoke mode
 PYCPT_OPTS=""
-if [[ "$PYCPT_SMOKE_MODE" == "1" ]]; then
+if [[ "$FINAL_SMOKE_MODE" == "1" ]]; then
   echo "==> [pycpt_run] Running in SMOKE MODE (data validation only, no CPT evaluation)"
   PYCPT_OPTS="--smoke"
 fi
 
-for line in "${LINES[@]}"; do
+run_region() {
+  local line="$1"
   IFS='|' read -r REG LATS LONS <<<"$line"
   if [[ "$LATS" == "None None" || "$LONS" == "None None" ]]; then
-    echo "[WARN] Skipping region '$REG' (missing CPT extents)"; continue
+    echo "[WARN] Skipping region '$REG' (missing CPT extents)"
+    return 0
   fi
   echo "==> [pycpt_run] Running PyCPT for region '$REG' (LATS=$LATS LONS=$LONS SEAS=$SEAS)"
   stdbuf -oL -eL ./pycpt_s2s_realtime.py \
@@ -102,6 +132,41 @@ for line in "${LINES[@]}"; do
     --fcstdate "$FCSTDATE" \
     --config "$CONFIG" \
     $PYCPT_OPTS
-done
+}
+
+if [[ "$PYCPT_MAX_WORKERS" -eq 1 ]]; then
+  for line in "${LINES[@]}"; do
+    run_region "$line"
+  done
+else
+  echo "==> [pycpt_run] Parallel PyCPT mode with max workers=$PYCPT_MAX_WORKERS"
+  fail=0
+  declare -a pids=()
+  for line in "${LINES[@]}"; do
+    run_region "$line" &
+    pids+=("$!")
+    while [[ "${#pids[@]}" -ge "$PYCPT_MAX_WORKERS" ]]; do
+      if ! wait -n; then
+        fail=1
+      fi
+      new_pids=()
+      for pid in "${pids[@]}"; do
+        if kill -0 "$pid" 2>/dev/null; then
+          new_pids+=("$pid")
+        fi
+      done
+      pids=("${new_pids[@]}")
+    done
+  done
+  for pid in "${pids[@]}"; do
+    if ! wait "$pid"; then
+      fail=1
+    fi
+  done
+  if [[ "$fail" -ne 0 ]]; then
+    echo "[ERROR] One or more parallel PyCPT region jobs failed" >&2
+    exit 1
+  fi
+fi
 
 echo "==> [pycpt_run] Done."

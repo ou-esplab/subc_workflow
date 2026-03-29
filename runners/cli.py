@@ -24,10 +24,13 @@ def load_cfg(path):
     with open(path, "r", encoding="utf-8") as f:
         return yaml.safe_load(f) or {}
 
-def run_cmd(cmd_list, log_path):
+def run_cmd(cmd_list, log_path, extra_env=None):
     os.makedirs(os.path.dirname(log_path), exist_ok=True)
     with open(log_path, "w") as log:
-        proc = subprocess.Popen(cmd_list, stdout=log, stderr=subprocess.STDOUT, text=True)
+        env = os.environ.copy()
+        if extra_env:
+            env.update({k: str(v) for k, v in extra_env.items() if v is not None})
+        proc = subprocess.Popen(cmd_list, stdout=log, stderr=subprocess.STDOUT, text=True, env=env)
         code = proc.wait()
         if code != 0:
             raise RuntimeError(f"Command failed ({code}): {' '.join(cmd_list)}; see {log_path}")
@@ -40,6 +43,14 @@ def main():
     ap.add_argument("--system", required=True, help="subx|nmme")
     ap.add_argument("--stages", nargs="*", default=["ingest","products","pycpt"],
                     help="Stages to run in order: ingest products pycpt")
+    ap.add_argument("--products-dry-run", action="store_true",
+                    help="SubX only: run products stage in smoke/dry-run mode")
+    ap.add_argument("--pycpt-only", nargs="+", default=None,
+                    help="SubX only: run PyCPT for only these region names")
+    ap.add_argument("--pycpt-max-workers", type=int, default=1,
+                    help="SubX only: max parallel regional PyCPT workers")
+    ap.add_argument("--pycpt-dry-run", action="store_true",
+                    help="SubX only: run PyCPT in smoke mode (data prep only)")
     args = ap.parse_args()
 
     config_path = os.path.abspath(args.config)
@@ -58,6 +69,17 @@ def main():
             "ingest":   [str(ROOT_DIR / "update_subx_fcsts.sh"), init, config_path],
             "products": [str(ROOT_DIR / "make_fcsts.sh"), init, config_path],
             "pycpt":    [str(ROOT_DIR / "pycpt_run.sh"), init, config_path],
+        }
+        stage_envs = {
+            "ingest": {},
+            "products": {
+                "SUBX_PRODUCTS_SMOKE": "1" if args.products_dry_run else None,
+            },
+            "pycpt": {
+                "PYCPT_ONLY": ",".join(args.pycpt_only) if args.pycpt_only else None,
+                "PYCPT_MAX_WORKERS": args.pycpt_max_workers,
+                "PYCPT_SMOKE_MODE": "1" if args.pycpt_dry_run else None,
+            },
         }
     elif system == "nmme":
         # products expects YYYYMM; normalize if init like YYYYMMDD
@@ -80,13 +102,18 @@ def main():
                            "  subprocess.check_call(cmd)",
                            args.config, norm_init],
         }
+        stage_envs = {"ingest": {}, "products": {}, "pycpt": {}}
     else:
         raise ValueError(f"Unknown system: {system}")
 
     for i, stage in enumerate(args.stages, 1):
         if stage not in stage_cmds:
             raise ValueError(f"Unknown stage '{stage}'. Valid: {list(stage_cmds.keys())}")
-        run_cmd(stage_cmds[stage], os.path.join(logdir, f"{i:02d}_{stage}.log"))
+        run_cmd(
+            stage_cmds[stage],
+            os.path.join(logdir, f"{i:02d}_{stage}.log"),
+            extra_env=stage_envs.get(stage, {}),
+        )
 
     print(json.dumps({"system": system, "init": init, "stages": args.stages, "logdir": logdir}))
     return 0
