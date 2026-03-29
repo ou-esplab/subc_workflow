@@ -11,6 +11,7 @@ CONFIG_IN="${2:-config.yaml}"
 CONFIG="$(python3 -c 'import os,sys; print(os.path.abspath(sys.argv[1]))' "$CONFIG_IN")"
 PYCPT_ONLY_RAW="${PYCPT_ONLY:-}"
 PYCPT_MAX_WORKERS="${PYCPT_MAX_WORKERS:-1}"
+PYCPT_MODELS_RAW="${PYCPT_MODELS:-}"
 
 # Resolve forecast date (latest Thursday if not provided)
 if [[ -z "${FCSTDATE:-}" ]]; then
@@ -124,14 +125,27 @@ run_region() {
     return 0
   fi
   echo "==> [pycpt_run] Running PyCPT for region '$REG' (LATS=$LATS LONS=$LONS SEAS=$SEAS)"
-  stdbuf -oL -eL ./pycpt_s2s_realtime.py \
-    --regname "$REG" \
-    --lat_minmax $LATS \
-    --lon_minmax $LONS \
-    --training_season "$SEAS" \
-    --fcstdate "$FCSTDATE" \
-    --config "$CONFIG" \
-    $PYCPT_OPTS
+  local -a cmd=(
+    ./pycpt_s2s_realtime.py
+    --regname "$REG"
+    --lat_minmax $LATS
+    --lon_minmax $LONS
+    --training_season "$SEAS"
+    --fcstdate "$FCSTDATE"
+    --config "$CONFIG"
+  )
+  if [[ -n "$PYCPT_OPTS" ]]; then
+    cmd+=("$PYCPT_OPTS")
+  fi
+  if [[ -n "$PYCPT_MODELS_RAW" ]]; then
+    local models_csv="${PYCPT_MODELS_RAW//,/ }"
+    read -r -a model_arr <<<"$models_csv"
+    if [[ "${#model_arr[@]}" -gt 0 ]]; then
+      cmd+=(--models "${model_arr[@]}")
+      echo "==> [pycpt_run] Model override: ${model_arr[*]}"
+    fi
+  fi
+  stdbuf -oL -eL "${cmd[@]}"
 }
 
 if [[ "$PYCPT_MAX_WORKERS" -eq 1 ]]; then

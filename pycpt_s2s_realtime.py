@@ -48,6 +48,50 @@ def _as_bool(value, default=False):
     return bool(value)
 
 
+def _default_predictor_name(model_id: str, predictor_var: str) -> str:
+    # Convert local model IDs like EMC-GEFSv12_CPC to a PyCPT predictor token.
+    token = model_id.split('-', 1)[-1] if '-' in model_id else model_id
+    token = token.replace('_CPC', '').replace('_5daily', '')
+    return f"{token}.{predictor_var}"
+
+
+def resolve_pycpt_model_specs(cfg: dict, pycpt_cfg: dict, cli_models, predictor_var: str):
+    predictor_name_map = pycpt_cfg.get('predictor_name_map') or {}
+    specs = []
+
+    # Highest-priority: explicit predictor names from config.
+    predictor_names_cfg = pycpt_cfg.get('predictor_names') or []
+    if predictor_names_cfg:
+        default_local = pycpt_cfg.get('local_subx_model_id', 'EMC-GEFSv12_CPC')
+        for pname in predictor_names_cfg:
+            local_id = None
+            for key, value in predictor_name_map.items():
+                if value == pname:
+                    local_id = key
+                    break
+            if local_id is None:
+                local_id = default_local
+            specs.append({'model_id': local_id, 'predictor_name': pname})
+        return specs
+
+    # Next: CLI/config model-group selection in local model-id form.
+    model_ids = []
+    if cli_models:
+        model_ids = list(cli_models)
+    elif pycpt_cfg.get('model_group'):
+        model_ids = list(pycpt_cfg.get('model_group') or [])
+    elif pycpt_cfg.get('models'):
+        model_ids = list(pycpt_cfg.get('models') or [])
+    else:
+        model_ids = [pycpt_cfg.get('local_subx_model_id', 'EMC-GEFSv12_CPC')]
+
+    for model_id in model_ids:
+        pname = predictor_name_map.get(model_id) or _default_predictor_name(model_id, predictor_var)
+        specs.append({'model_id': model_id, 'predictor_name': pname})
+
+    return specs
+
+
 def expected_local_files(predictor_names, predictand_name, leads, fcst_dt):
     expected = []
     for lead_name, lead_low, lead_high in leads:
@@ -285,6 +329,8 @@ def main():
     p.add_argument('--fcstdate', required=True)
     p.add_argument('--config', default='config.yaml')
     p.add_argument('--smoke', action='store_true', help='Smoke mode: validate data prep only, skip CPT evaluation')
+    p.add_argument('--models', nargs='*', default=None,
+                   help='Optional local model IDs to use for PyCPT predictors (e.g., EMC-GEFSv12_CPC NCEP-CFSv2)')
     args = p.parse_args()
 
     # Load config & resolve paths
@@ -305,8 +351,13 @@ def main():
         import pycpt
         from pycpt import subseasonal
 
-        MOS = 'CCA'
-        predictor_names = ["GEFSv12.PRCP"]   # can be extended in config later
+        MOS = pycpt_cfg.get('mos', 'CCA')
+        predictor_var = pycpt_cfg.get('predictor_var', 'PRCP')
+        model_specs = resolve_pycpt_model_specs(cfg, pycpt_cfg, args.models, predictor_var)
+        predictor_names = [s['predictor_name'] for s in model_specs]
+        predictor_model_ids = [s['model_id'] for s in model_specs]
+        print('[PyCPT] Predictor model group:')
+        print(json.dumps(model_specs, indent=2))
         predictand_name = 'CHIRPS.PRCP'
 
         fdate = datetime.strptime(args.fcstdate, "%Y%m%d")
@@ -341,9 +392,8 @@ def main():
 
         if use_local_subx_predictor:
             subx_root = Path(pycpt_cfg.get('local_subx_root') or cfg['paths']['rt_root']).expanduser().resolve()
-            predictor_model_id = pycpt_cfg.get('local_subx_model_id', 'EMC-GEFSv12_CPC')
             var_map = {'PRCP': 'pr', 'T2M': 'tas', 'TMP': 'tas'}
-            for predictor_name in predictor_names:
+            for predictor_name, predictor_model_id in zip(predictor_names, predictor_model_ids):
                 model_tag, var_tag = predictor_name.split('.', 1)
                 var_local = var_map.get(var_tag.upper(), var_tag.lower())
                 _ = model_tag

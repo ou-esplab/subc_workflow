@@ -39,6 +39,22 @@ regions:
 pycpt:
   mos: CCA
   training_season: Feb-Apr
+  # Optional predictor variable suffix used when building predictor names
+  # from model_group entries. Common values: PRCP, T2M, TMP.
+  predictor_var: PRCP
+  # Optional model group for PyCPT predictor selection (local model IDs).
+  # Example: [EMC-GEFSv12_CPC, NCEP-CFSv2]
+  # If omitted, falls back to local_subx_model_id.
+  model_group: []
+  # Optional explicit predictor-name mapping when local model IDs do not
+  # match PyCPT naming conventions.
+  # predictor_name_map:
+  #   EMC-GEFSv12_CPC: GEFSv12.PRCP
+  #   NCEP-CFSv2: CFSv2.PRCP
+  predictor_name_map: {}
+  # Optional explicit predictor names (highest priority).
+  # If set, these names are used directly by PyCPT download/evaluation.
+  predictor_names: []
   # Optional local-data mode to avoid downloads in pycpt_s2s_realtime.py.
   use_local_data: false
   local_data_dir: null

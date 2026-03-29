@@ -49,6 +49,8 @@ def main():
                     help="SubX only: run PyCPT for only these region names")
     ap.add_argument("--pycpt-max-workers", type=int, default=1,
                     help="SubX only: max parallel regional PyCPT workers")
+    ap.add_argument("--pycpt-models", nargs="+", default=None,
+                    help="SubX only: override PyCPT model group (e.g., EMC-GEFSv12_CPC NCEP-CFSv2)")
     ap.add_argument("--pycpt-dry-run", action="store_true",
                     help="SubX only: run PyCPT in smoke mode (data prep only)")
     args = ap.parse_args()
@@ -78,6 +80,7 @@ def main():
             "pycpt": {
                 "PYCPT_ONLY": ",".join(args.pycpt_only) if args.pycpt_only else None,
                 "PYCPT_MAX_WORKERS": args.pycpt_max_workers,
+                "PYCPT_MODELS": ",".join(args.pycpt_models) if args.pycpt_models else None,
                 "PYCPT_SMOKE_MODE": "1" if args.pycpt_dry_run else None,
             },
         }

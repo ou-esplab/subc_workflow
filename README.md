@@ -135,6 +135,31 @@ pycpt:
 
 This mode builds PyCPT-compatible predictor weekly files from local SubX forecast/hindcast NetCDFs and avoids predictor downloads. Observed predictand downloads may still occur unless those files are also pre-staged.
 
+## PyCPT Model Group Selection (Config)
+
+You can control which predictor models PyCPT uses directly in config.
+
+```yaml
+pycpt:
+	predictor_var: PRCP
+	model_group: [EMC-GEFSv12_CPC, NCEP-CFSv2]
+	predictor_name_map:
+		EMC-GEFSv12_CPC: GEFSv12.PRCP
+		NCEP-CFSv2: CFSv2.PRCP
+```
+
+Model selection precedence is:
+
+1. CLI `--models` passed through runner/shell orchestration
+2. `pycpt.predictor_names` (explicit PyCPT names)
+3. `pycpt.model_group` (local model IDs)
+4. `pycpt.models`
+5. `pycpt.local_subx_model_id` fallback
+
+For local SubX archive mode, each selected model in `model_group` must exist under:
+
+`<local_subx_root>/<GROUP>-<MODEL>/<forecast,hindcast>/<var>/...`
+
 ## Tests
 
 Run the unit test suite with:
