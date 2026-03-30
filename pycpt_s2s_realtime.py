@@ -31,11 +31,56 @@ import glob
 import json
 import shutil
 from pathlib import Path
-from datetime import datetime
+from datetime import datetime, timedelta
 
 import yaml
 
 from utils_email import send_email
+
+
+def patch_cptio_zero_day_date_range_parser() -> None:
+    """Patch cptio date-range parsing for same-day CPT date strings.
+
+    Some CPT outputs can emit date ranges that collapse to a single day string,
+    which triggers cptio's "Zero or sub-day date range" exception. For this
+    workflow, treat those as one-day ranges so PyCPT post-processing can proceed.
+    Patches are applied silently to keep log output clean.
+    """
+    try:
+        import cptio.fileio.cpt as cptmod
+    except Exception:
+        return
+
+    if getattr(cptmod, "_subx_zero_day_patch", False):
+        return
+
+    original = cptmod.read_cpt_date_range
+
+    def _patched(date_original):
+        try:
+            return original(date_original)
+        except Exception as exc:
+            if "Zero or sub-day date range" not in str(exc):
+                raise
+
+            if "/" in date_original:
+                date1, date2 = date_original.split("/", 1)
+                date1 = date1.split("T")[0].split(" ")[0]
+                date2 = date2.split("T")[0].split(" ")[0]
+                ret1 = cptmod.datetime_timestamp_start(date1)
+                ret2 = cptmod.datetime_timestamp_end(date2)
+            else:
+                date1 = date_original.split("T")[0].split(" ")[0]
+                ret1 = cptmod.datetime_timestamp_start(date1)
+                ret2 = cptmod.datetime_timestamp_end(date1)
+
+            if ret2 <= ret1:
+                ret2 = ret1 + timedelta(days=1)
+
+            return [ret1, ret1 + (ret2 - ret1) / 2, ret2]
+
+    cptmod.read_cpt_date_range = _patched
+    cptmod._subx_zero_day_patch = True
 
 
 def _as_bool(value, default=False):
@@ -350,6 +395,8 @@ def main():
         import cartopy.feature as cfeature
         import pycpt
         from pycpt import subseasonal
+
+        patch_cptio_zero_day_date_range_parser()
 
         MOS = pycpt_cfg.get('mos', 'CCA')
         predictor_var = pycpt_cfg.get('predictor_var', 'PRCP')
