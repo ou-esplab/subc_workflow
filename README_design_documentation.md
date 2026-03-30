@@ -130,7 +130,7 @@ Model selection precedence is explicit and shared between configuration and CLI.
 ## Operational Notes
 
 - Runtime outputs and logs are date-scoped and stage-scoped.
-- Scratch diagnostics should stay inside the repository workspace rather than `/tmp`.
+- Scratch diagnostics should be written under `logs/scratch/` rather than `/tmp`.
 - The workflow may intentionally tolerate missing models when configured data are absent, but that tolerance is explicit and stage-dependent.
 
 ---

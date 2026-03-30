@@ -204,12 +204,12 @@ def main():
 
     # ---- Combine → weeks → SUBC‑MME ----
     ds_models = safe_concat(ds_anoms_by_model, dim='model')
-    print("[DBG] ds_models dims:", dict(ds_models.dims))
+    print("[DBG] ds_models dims:", dict(ds_models.sizes))
     print("[DBG] ds_models vars:", list(ds_models.data_vars))
     ds_week   = weekly_reduce(ds_models, fcstdate, nweeks=4)
     
     ds_mme = ds_week.mean('model').assign_coords(
-        S=np.datetime64(pd.to_datetime(fcstdate)),
+        S=np.datetime64(pd.Timestamp(fcstdate), 'ns'),
         model='SUBC-MME',
         nens=ds_week['nens'].sum(),
         ic_dates=pd.to_datetime(fcstdate).strftime('%Y%m%d'),

@@ -10,7 +10,6 @@ __pycache__/
 
 # Workflow-generated runtime outputs
 .tmp_smoke/
-.scratch/
 logs/
 
 # Optional local env files

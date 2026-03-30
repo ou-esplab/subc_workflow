@@ -1,0 +1,7 @@
+{
+  "python.defaultInterpreterPath": "/home/kpegion/miniconda3/envs/subc_workflow_env/bin/python",
+  "python.analysis.extraPaths": [
+    "."
+  ],
+  "python.terminal.activateEnvironment": true
+}
