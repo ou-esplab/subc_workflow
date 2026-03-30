@@ -33,3 +33,11 @@ Outputs and logs are written under `logs/YYYYMMDD_HHMMSS/subx/<init>/`.
 - Exceedance thresholds are selected per model from per-MMDD files.
 - Nearest-MMDD fallback is only allowed within `+/- 7` days by default via `exceedance.max_fallback_days` in [config.yaml](config.yaml).
 - If no threshold is close enough, the model is skipped and stale exceedance outputs for that model/date are removed.
+
+## Recent Changes
+
+- 2026-03-29: Exceedance processing now enforces bounded threshold fallback (`max_fallback_days`) and removes stale model outputs when a model is skipped.
+
+## Diagnostics
+
+- Diagnostic utilities and ad hoc debug workflows are documented in [DIAGNOSTICS.md](DIAGNOSTICS.md).

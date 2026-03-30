@@ -17,14 +17,14 @@ echo "==> [make_fcsts] Start for FCSTDATE=$FCSTDATE CONFIG=$CONFIG"
 
 SMOKE_PRODUCTS="${SUBX_PRODUCTS_SMOKE:-}"
 if [[ -z "$SMOKE_PRODUCTS" ]]; then
-    SMOKE_PRODUCTS="$((python3 - <<'PY' "$CONFIG"
+    SMOKE_PRODUCTS="$(python3 - <<'PY' "$CONFIG"
 import sys
 import yaml
 
 cfg = yaml.safe_load(open(sys.argv[1])) or {}
 print(1 if (cfg.get("workflow") or {}).get("products_smoke", False) else 0)
 PY
-    ))"
+    )"
 fi
 
 OUTW="$(
