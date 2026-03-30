@@ -15,7 +15,7 @@ class CliWorkflowTests(unittest.TestCase):
             config_path.write_text("{}\n", encoding="utf-8")
             calls = []
 
-            def fake_run_cmd(command, log_path):
+            def fake_run_cmd(command, log_path, extra_env=None):
                 calls.append((command, log_path))
                 return log_path
 
@@ -44,7 +44,11 @@ class CliWorkflowTests(unittest.TestCase):
             config_path.write_text("{}\n", encoding="utf-8")
             calls = []
 
-            with mock.patch.object(cli, "run_cmd", side_effect=lambda command, log_path: calls.append((command, log_path))):
+            with mock.patch.object(
+                cli,
+                "run_cmd",
+                side_effect=lambda command, log_path, extra_env=None: calls.append((command, log_path)),
+            ):
                 with mock.patch("sys.argv", [
                     "cli.py",
                     "--system",

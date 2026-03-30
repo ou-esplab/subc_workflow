@@ -80,7 +80,7 @@ Outputs include:
 
 ## Exceedance Design
 
-Shared exceedance utilities live in [subc_pycpt_utils.py](subc_pycpt_utils.py).
+Shared exceedance utilities live in [utils/subc_pycpt_utils.py](utils/subc_pycpt_utils.py).
 
 Design intent:
 
@@ -121,7 +121,7 @@ Model selection precedence is explicit and shared between configuration and CLI.
 - [forecast.py](forecast.py): weekly products and exceedance generation
 - [validate_realtime.py](validate_realtime.py): preflight validation
 - [pycpt_s2s_realtime.py](pycpt_s2s_realtime.py): regional PyCPT execution
-- [subc_pycpt_utils.py](subc_pycpt_utils.py): shared date, exceedance, plotting, and xarray helpers
+- [utils/subc_pycpt_utils.py](utils/subc_pycpt_utils.py): shared date, exceedance, plotting, and xarray helpers
 - [utils/split_percentiles_by_mmdd.py](utils/split_percentiles_by_mmdd.py): threshold file splitter utility
 - [utils/exceedance_diag.py](utils/exceedance_diag.py): dimensional and threshold-selection diagnostics
 

@@ -54,7 +54,7 @@ notify_failure() {
 import sys
 import yaml
 
-from utils_email import send_email
+from utils.utils_email import send_email
 
 cfg = yaml.safe_load(open(sys.argv[1])) or {}
 send_email(cfg.get("email", {}), "SubX pipeline failed", "A stage failed. Check the pipeline logs for details.")

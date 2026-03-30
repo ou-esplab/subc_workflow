@@ -44,7 +44,7 @@ import pandas as pd
 import xarray as xr
 import yaml
 
-from subc_pycpt_utils import (
+from utils.subc_pycpt_utils import (
     latest_thursday, fcst_week_dates, ensure_lon, safe_concat,
     weekly_reduce, save_manifest, compute_exceedance,
     nearest_mmdd_threshold,

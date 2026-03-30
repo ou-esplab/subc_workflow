@@ -35,8 +35,7 @@ from datetime import datetime, timedelta
 
 import yaml
 
-from utils_email import send_email
-
+from utils.utils_email import send_email
 
 def patch_cptio_zero_day_date_range_parser() -> None:
     """Patch cptio date-range parsing for same-day CPT date strings.

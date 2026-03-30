@@ -51,7 +51,7 @@ def main(dataset_url):
 
 if __name__ == "__main__":
     if len(sys.argv) < 2:
-        print("Usage: python get_subx_metadata.py <dataset_url>")
+        print("Usage: python utils/get_subx_metadata.py <dataset_url>")
         sys.exit(1)
     main(sys.argv[1])
 

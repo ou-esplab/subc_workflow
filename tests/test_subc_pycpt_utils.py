@@ -4,7 +4,7 @@ import numpy as np
 import pandas as pd
 import xarray as xr
 
-from subc_pycpt_utils import ensure_lon, fcst_week_dates, latest_thursday, weekly_reduce
+from utils.subc_pycpt_utils import ensure_lon, fcst_week_dates, latest_thursday, weekly_reduce
 
 
 class SubcPycptUtilsTests(unittest.TestCase):

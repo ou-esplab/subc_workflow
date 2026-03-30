@@ -11,7 +11,7 @@ import pandas as pd
 import xarray as xr
 import yaml
 
-from subc_pycpt_utils import (
+from utils.subc_pycpt_utils import (
     compute_exceedance,
     ensure_lon,
     fcst_week_dates,
