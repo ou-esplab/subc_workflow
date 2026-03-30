@@ -80,14 +80,26 @@ def _remove_stale_legacy_products(out_images: str) -> None:
         print(f"[INFO] Removed {removed} stale legacy product image(s).")
 
 
-def _prepare_north_america_view(da: xr.DataArray) -> xr.DataArray:
+def _prepare_domain_view(da: xr.DataArray, lon_bounds: tuple[float, float], lat_bounds: tuple[float, float]) -> xr.DataArray:
     da_plot = da.assign_coords(lon=xr.where(da["lon"] > 180, da["lon"] - 360, da["lon"])).sortby("lon")
-    return da_plot.sel(lon=slice(-170, -30), lat=slice(10, 80))
+    return da_plot.sel(lon=slice(lon_bounds[0], lon_bounds[1]), lat=slice(lat_bounds[0], lat_bounds[1]))
 
 
-def _plot_weekly_tas_panels(ds_subx: xr.Dataset, out_images: str, fcstdate: str) -> None:
-    if "tas" not in ds_subx:
-        print("[WARN] Skipping temperature panel plots (tas not present).")
+def _plot_weekly_panels(
+    ds_subx: xr.Dataset,
+    var_name: str,
+    out_images: str,
+    fcstdate: str,
+    title_prefix: str,
+    units: str,
+    filename_prefix: str,
+    domain_name: str,
+    lon_bounds: tuple[float, float],
+    lat_bounds: tuple[float, float],
+    levels: np.ndarray,
+) -> None:
+    if var_name not in ds_subx:
+        print(f"[WARN] Skipping {filename_prefix} plots ({var_name} not present).")
         return
 
     import math
@@ -101,7 +113,6 @@ def _plot_weekly_tas_panels(ds_subx: xr.Dataset, out_images: str, fcstdate: str)
 
     ncols = 3
     nrows = math.ceil(len(models) / ncols)
-    levels = np.array([-4, -3, -2.5, -2, -1.5, -1, -0.2, 0.2, 0.5, 1, 1.5, 2, 2.5, 3, 4])
     cmap = plt.get_cmap("RdYlBu_r", len(levels) - 1)
     norm = mcolors.BoundaryNorm(levels, cmap.N)
 
@@ -114,7 +125,7 @@ def _plot_weekly_tas_panels(ds_subx: xr.Dataset, out_images: str, fcstdate: str)
             squeeze=False,
         )
         fig.suptitle(
-            f"SubX Week {week} 2m Temperature Anomalies (C): Valid week ending "
+            f"SubX Week {week} {title_prefix}: Valid week ending "
             f"{pd.Timestamp(fcstdate) + pd.Timedelta(days=(week * 7 + 1)):%b %d}",
             fontsize=15,
             y=0.99,
@@ -124,13 +135,13 @@ def _plot_weekly_tas_panels(ds_subx: xr.Dataset, out_images: str, fcstdate: str)
         for idx, model_id in enumerate(models):
             row, col = divmod(idx, ncols)
             ax = axes[row][col]
-            ax.set_extent([-170, -30, 10, 80], crs=ccrs.PlateCarree())
+            ax.set_extent([lon_bounds[0], lon_bounds[1], lat_bounds[0], lat_bounds[1]], crs=ccrs.PlateCarree())
             ax.coastlines("110m", linewidth=0.8)
             ax.add_feature(cfeature.BORDERS, linewidth=0.4)
             ax.add_feature(cfeature.STATES, linewidth=0.2)
 
-            da = ds_subx["tas"].sel(model=model_id, week=week)
-            da = _prepare_north_america_view(da)
+            da = ds_subx[var_name].sel(model=model_id, week=week)
+            da = _prepare_domain_view(da, lon_bounds, lat_bounds)
 
             finite = np.isfinite(da.values)
             if finite.any():
@@ -154,15 +165,15 @@ def _plot_weekly_tas_panels(ds_subx: xr.Dataset, out_images: str, fcstdate: str)
 
         if mappable is not None:
             cbar = fig.colorbar(mappable, ax=axes, orientation="horizontal", fraction=0.05, pad=0.08)
-            cbar.set_label("C")
+            cbar.set_label(units)
 
-        out_png = os.path.join(out_images, f"2mTempNorthAmericaWeek{week}.png")
+        out_png = os.path.join(out_images, f"{filename_prefix}{domain_name}Week{week}.png")
         plt.tight_layout(rect=[0, 0.05, 1, 0.96])
         fig.savefig(out_png, dpi=150, bbox_inches="tight")
         plt.close(fig)
         print(f"[SAVE] {out_png}")
 
-    da_34 = ds_subx["tas"].sel(week=[3, 4]).mean("week")
+    da_34 = ds_subx[var_name].sel(week=[3, 4]).mean("week")
     fig, axes = plt.subplots(
         nrows,
         ncols,
@@ -170,18 +181,18 @@ def _plot_weekly_tas_panels(ds_subx: xr.Dataset, out_images: str, fcstdate: str)
         subplot_kw={"projection": ccrs.PlateCarree()},
         squeeze=False,
     )
-    fig.suptitle("SubX Weeks 3&4 2m Temperature Anomalies (C)", fontsize=15, y=0.99)
+    fig.suptitle(f"SubX Weeks 3&4 {title_prefix}", fontsize=15, y=0.99)
 
     mappable = None
     for idx, model_id in enumerate(models):
         row, col = divmod(idx, ncols)
         ax = axes[row][col]
-        ax.set_extent([-170, -30, 10, 80], crs=ccrs.PlateCarree())
+        ax.set_extent([lon_bounds[0], lon_bounds[1], lat_bounds[0], lat_bounds[1]], crs=ccrs.PlateCarree())
         ax.coastlines("110m", linewidth=0.8)
         ax.add_feature(cfeature.BORDERS, linewidth=0.4)
         ax.add_feature(cfeature.STATES, linewidth=0.2)
 
-        da = _prepare_north_america_view(da_34.sel(model=model_id))
+        da = _prepare_domain_view(da_34.sel(model=model_id), lon_bounds, lat_bounds)
         finite = np.isfinite(da.values)
         if finite.any():
             mappable = ax.contourf(
@@ -204,13 +215,96 @@ def _plot_weekly_tas_panels(ds_subx: xr.Dataset, out_images: str, fcstdate: str)
 
     if mappable is not None:
         cbar = fig.colorbar(mappable, ax=axes, orientation="horizontal", fraction=0.05, pad=0.08)
-        cbar.set_label("C")
+        cbar.set_label(units)
 
-    out_png = os.path.join(out_images, "2mTempNorthAmericaWeeks3&4.png")
+    out_png = os.path.join(out_images, f"{filename_prefix}{domain_name}Weeks3&4.png")
     plt.tight_layout(rect=[0, 0.05, 1, 0.96])
     fig.savefig(out_png, dpi=150, bbox_inches="tight")
     plt.close(fig)
     print(f"[SAVE] {out_png}")
+
+
+def _plot_legacy_weekly_products(ds_subx: xr.Dataset, out_images: str, fcstdate: str) -> None:
+    _plot_weekly_panels(
+        ds_subx,
+        var_name="tas",
+        out_images=out_images,
+        fcstdate=fcstdate,
+        title_prefix="2m Temperature Anomalies (C)",
+        units="C",
+        filename_prefix="2mTemp",
+        domain_name="NorthAmerica",
+        lon_bounds=(-170, -30),
+        lat_bounds=(10, 80),
+        levels=np.array([-4, -3, -2.5, -2, -1.5, -1, -0.2, 0.2, 0.5, 1, 1.5, 2, 2.5, 3, 4]),
+    )
+
+    _plot_weekly_panels(
+        ds_subx,
+        var_name="pr",
+        out_images=out_images,
+        fcstdate=fcstdate,
+        title_prefix="Precipitation Anomalies (mm/week)",
+        units="mm/week",
+        filename_prefix="Precip",
+        domain_name="Global",
+        lon_bounds=(-180, 180),
+        lat_bounds=(-60, 80),
+        levels=np.array([-35, -25, -15, -10, -5, -2, 2, 5, 10, 15, 25, 35]),
+    )
+    _plot_weekly_panels(
+        ds_subx,
+        var_name="pr",
+        out_images=out_images,
+        fcstdate=fcstdate,
+        title_prefix="Precipitation Anomalies (mm/week)",
+        units="mm/week",
+        filename_prefix="Precip",
+        domain_name="NorthAmerica",
+        lon_bounds=(-170, -30),
+        lat_bounds=(10, 80),
+        levels=np.array([-35, -25, -15, -10, -5, -2, 2, 5, 10, 15, 25, 35]),
+    )
+    _plot_weekly_panels(
+        ds_subx,
+        var_name="pr",
+        out_images=out_images,
+        fcstdate=fcstdate,
+        title_prefix="Precipitation Anomalies (mm/week)",
+        units="mm/week",
+        filename_prefix="Precip",
+        domain_name="Iran",
+        lon_bounds=(40, 64),
+        lat_bounds=(24, 40),
+        levels=np.array([-35, -25, -15, -10, -5, -2, 2, 5, 10, 15, 25, 35]),
+    )
+    _plot_weekly_panels(
+        ds_subx,
+        var_name="pr",
+        out_images=out_images,
+        fcstdate=fcstdate,
+        title_prefix="Precipitation Anomalies (mm/week)",
+        units="mm/week",
+        filename_prefix="Precip",
+        domain_name="Venezuela",
+        lon_bounds=(-73, -60),
+        lat_bounds=(0, 13),
+        levels=np.array([-35, -25, -15, -10, -5, -2, 2, 5, 10, 15, 25, 35]),
+    )
+
+    _plot_weekly_panels(
+        ds_subx,
+        var_name="zg_500",
+        out_images=out_images,
+        fcstdate=fcstdate,
+        title_prefix="500 hPa Geopotential Height Anomalies (m)",
+        units="m",
+        filename_prefix="500hPaGeopotentialHeight",
+        domain_name="NorthernHemisphere",
+        lon_bounds=(-180, 180),
+        lat_bounds=(10, 90),
+        levels=np.array([-200, -150, -100, -60, -30, -10, 10, 30, 60, 100, 150, 200]),
+    )
 
 def main():
     ap = argparse.ArgumentParser()
@@ -381,7 +475,7 @@ def main():
         ds_subx.to_netcdf(nc_out)
         print(f"[SAVE] {nc_out}")
 
-    _plot_weekly_tas_panels(ds_subx, out_images, fcstdate)
+    _plot_legacy_weekly_products(ds_subx, out_images, fcstdate)
 
     # ---- Exceedance for all available models ----
     if ds_full_by_model:
