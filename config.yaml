@@ -1,6 +1,8 @@
 
 fcstdate: null
 lon_convention: "0_360"
+validation:
+  policy: warn_on_missing  # Use all available data; missing inputs are warnings, not errors
 paths:
   rt_root: /data/esplab/subc-backup
   hc_root: /data/esplab/shared/model/initialized/subx/hindcast
