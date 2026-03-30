@@ -22,6 +22,8 @@ model_name_map:
   
 exceedance:
   var: pr
+  lev: sfc
+  max_fallback_days: 7
   model_id: EMC-GEFSv12_CPC
   percentile: 95
   window_days: 7

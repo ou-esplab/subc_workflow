@@ -20,12 +20,69 @@ from __future__ import annotations
 from typing import List, Tuple, Optional, Dict
 
 import os
+import glob
 import json
 from datetime import datetime, timedelta
 
 import numpy as np
 import pandas as pd
 import xarray as xr
+
+
+def _nearest_month_day_label(labels, init_mdy: str) -> str:
+    """Return exact MM-DD label if present, otherwise nearest by circular day-of-year distance."""
+    label_strs = [str(x) for x in labels]
+    if init_mdy in label_strs:
+        return init_mdy
+
+    target = datetime.strptime(init_mdy, "%m-%d")
+
+    def score(lbl: str) -> int:
+        try:
+            d = datetime.strptime(lbl, "%m-%d")
+            diff = abs((d - target).days)
+            return min(diff, 366 - diff)
+        except ValueError:
+            return 10**9
+
+    return min(label_strs, key=score)
+
+
+def nearest_mmdd_threshold(
+    thr_dir: str,
+    var: str,
+    group: str,
+    model: str,
+    mmdd: str,
+    pct: int,
+    max_offset_days: int = 7,
+) -> str | None:
+    """Return the exact threshold file for MMDD if present, else the nearest MMDD file within max_offset_days."""
+    exact = os.path.join(thr_dir, f"{var}_{group}-{model}_{mmdd}.{pct}p.nc")
+    if os.path.exists(exact):
+        return exact
+
+    candidates = sorted(glob.glob(os.path.join(thr_dir, f"{var}_{group}-{model}_*.{pct}p.nc")))
+    if not candidates:
+        return None
+
+    target = datetime.strptime(mmdd, "%m%d")
+
+    def score(path: str) -> int:
+        stem = os.path.basename(path)
+        token = stem.rsplit("_", 1)[-1].split(".")[0]
+        try:
+            d = datetime.strptime(token, "%m%d")
+            diff = abs((d - target).days)
+            return min(diff, 366 - diff)
+        except ValueError:
+            return 10**9
+
+    best_path = min(candidates, key=score)
+    best_offset = score(best_path)
+    if best_offset > max_offset_days:
+        return None
+    return best_path
 
 # ---------------------- Date helpers ---------------------- #
 
@@ -194,6 +251,14 @@ def compute_exceedance(
     # Normalize dim names if needed
     if 'L' in thr.dims:
         thr = thr.rename({'L': 'lead'})
+    if 'X' in thr.dims:
+        thr = thr.rename({'X': 'lon'})
+    if 'Y' in thr.dims:
+        thr = thr.rename({'Y': 'lat'})
+    if 'X' in thr.coords:
+        thr = thr.rename({'X': 'lon'})
+    if 'Y' in thr.coords:
+        thr = thr.rename({'Y': 'lat'})
 
     # Align threshold lon/lat to forecast grid (nearest)
     if 'lon' in thr.coords and 'lat' in thr.coords:
@@ -202,10 +267,10 @@ def compute_exceedance(
     # --------- 3) Select month_day near init_date and align 'lead' length/coords ----------
     init_mdy = pd.Timestamp(init_date).strftime('%m-%d')
     if 'month_day' in thr.coords:
-        if init_mdy in thr['month_day'].values:
-            thr_day = thr.sel(month_day=init_mdy)
-        else:
-            thr_day = thr.sel(month_day=init_mdy, method='nearest')
+        chosen_mdy = _nearest_month_day_label(thr['month_day'].values, init_mdy)
+        if chosen_mdy != init_mdy:
+            print(f"[INFO] compute_exceedance using nearest month_day '{chosen_mdy}' for requested '{init_mdy}'")
+        thr_day = thr.sel(month_day=chosen_mdy)
     else:
         # Some threshold files may omit month_day; assume already on correct slice
         thr_day = thr
@@ -293,8 +358,43 @@ def plot_exceedance_summary(probs, title, out_png, cmap='plasma'):
     import cartopy.crs as ccrs
     import cartopy.feature as cfeature
 
+    # Normalize to a plottable 2D DataArray on (lat, lon).
+    data = probs
+    if isinstance(data, xr.Dataset):
+        if not data.data_vars:
+            print(f"[WARN] No variables to plot for exceedance summary: {title}")
+            return False
+        data = next(iter(data.data_vars.values()))
+
+    if 'time_window' in data.dims:
+        data = data.mean('time_window')
+
+    if 'lat' not in data.dims or 'lon' not in data.dims:
+        print(f"[WARN] Exceedance summary is not map-like; skipping plot: dims={data.dims}")
+        return False
+
+    # Squeeze any remaining singleton dims other than lat/lon.
+    squeeze_dims = [d for d in data.dims if d not in ('lat', 'lon') and data.sizes.get(d, 1) == 1]
+    if squeeze_dims:
+        data = data.squeeze(squeeze_dims)
+
+    # Do not average extra dimensions implicitly. If the data are not a 2D map,
+    # report and skip so callers can diagnose the source dimensions explicitly.
+    extra_dims = [d for d in data.dims if d not in ('lat', 'lon')]
+    if extra_dims:
+        print(f"[WARN] Exceedance summary has extra dims {extra_dims}; skipping plot.")
+        return False
+
+    if data.sizes.get('lat', 0) == 0 or data.sizes.get('lon', 0) == 0:
+        print(f"[WARN] Empty lat/lon selection; skipping exceedance plot: {title}")
+        return False
+
+    finite = np.isfinite(data.values)
+    if not finite.any():
+        print(f"[WARN] Exceedance map has no finite values; skipping plot: {title}")
+        return False
+
     fig, ax = plt.subplots(figsize=(8, 4), subplot_kw={'projection': ccrs.PlateCarree()})
-    data = probs.mean('time_window')
     data.plot(ax=ax, transform=ccrs.PlateCarree(), cmap=cmap,
               vmin=0, vmax=100, cbar_kwargs={'label':'%','shrink':0.8})
     ax.coastlines('110m', linewidth=1)
@@ -304,6 +404,7 @@ def plot_exceedance_summary(probs, title, out_png, cmap='plasma'):
     plt.tight_layout()
     plt.savefig(out_png, dpi=150, bbox_inches='tight')
     plt.close(fig)
+    return True
 
 
 def plot_exceedance_panels(probs, init_date, window, out_png_prefix, cmap='plasma'):
@@ -333,6 +434,7 @@ def plot_exceedance_panels(probs, init_date, window, out_png_prefix, cmap='plasm
 __all__ = [
     'latest_thursday', 'fcst_week_dates', 'ensure_lon', 'safe_concat',
     'weekly_reduce', 'save_manifest', 'resolve_threshold_path',
+    'nearest_mmdd_threshold',
     'compute_exceedance',
     'plot_exceedance_summary', 'plot_exceedance_panels',
 ]

@@ -13,8 +13,8 @@ What this does
      - precipitation (pr*) is summed after converting to mm/day
      - everything else is averaged
 5) Builds SUBC‑MME as the model-mean of weekly anomalies.
-6) Computes "exceedance probability" for a chosen model/variable using a
-   precomputed percentile field (generic template; currently defaulting to GEFS).
+6) Computes "exceedance probability" for all available models using
+    precomputed percentile fields (per-model, per-MMDD files).
 7) Saves:
    - NetCDF of all models + MME weekly anomalies
    - Summary exceedance PNG per configured region
@@ -46,9 +46,20 @@ import yaml
 
 from subc_pycpt_utils import (
     latest_thursday, fcst_week_dates, ensure_lon, safe_concat,
-    weekly_reduce, save_manifest, compute_exceedance, resolve_threshold_path,
+    weekly_reduce, save_manifest, compute_exceedance,
+    nearest_mmdd_threshold,
     plot_exceedance_summary,
 )
+
+
+def _remove_stale_exceedance_outputs(out_dir: str, model_id: str, var: str, fcstdate: str, suffix: str) -> None:
+    pattern = os.path.join(out_dir, f"exceed_{model_id}_{var}_*_{fcstdate}.{suffix}")
+    for path in glob.glob(pattern):
+        try:
+            os.remove(path)
+            print(f"[INFO] Removed stale exceedance output: {path}")
+        except OSError as exc:
+            print(f"[WARN] Failed to remove stale output {path}: {exc}")
 
 def main():
     ap = argparse.ArgumentParser()
@@ -218,51 +229,96 @@ def main():
         ds_subx.to_netcdf(nc_out)
         print(f"[SAVE] {nc_out}")
 
-    # ---- Exceedance (generic; currently thresholds available for GEFS) ----
+    # ---- Exceedance for all available models ----
     if ds_full_by_model:
         ds_full = safe_concat(ds_full_by_model, dim='model')
 
-        ex  = cfg['exceedance']
-        mid = ex['model_id']     # e.g., EMC-GEFSv12_CPC
-        var = ex['var']          # e.g., pr
-        pct = ex['percentile']
-        win = ex['window_days']
+        ex = cfg['exceedance']
+        var = ex['var']
+        pct = int(ex['percentile'])
+        win = int(ex['window_days'])
+        lev = ex.get('lev', 'sfc')
+        max_fallback_days = int(ex.get('max_fallback_days', 7))
 
-        thr_path = resolve_threshold_path(
-            template      = cfg['paths'].get('thresholds_template', ''),
-            percentile    = pct,
-            modelkey      = ex.get('modelkey', 'GEFSthres'),
-            var           = var,
-            gefs_fallback = cfg['paths'].get('thresholds_gefs_pr'),
-        )
+        if var in ds_full:
+            mmdd = pd.Timestamp(fcstdate).strftime('%m%d')
+            processed_models = []
+            available_models = [str(m) for m in ds_full['model'].values if str(m) != 'SUBC-MME']
 
-        if thr_path and (var in ds_full) and (mid in ds_full['model'].values):
-            for r in cfg.get('regions', []):                           # unified regions
-                region_name = r['name']
-                bounds      = r.get('subx', {})                       # use subx extents here
-                lon_slice   = tuple(bounds.get('lon', [])) if 'lon' in bounds else None
-                lat_slice   = tuple(bounds.get('lat', [])) if 'lat' in bounds else None
+            for mid in available_models:
+                if '-' not in mid:
+                    print(f"[WARN] Skipping exceedance for malformed model id '{mid}'")
+                    continue
 
-                field = ds_full[var].sel(model=mid).mean('M')          # ensemble mean field
-                print(field)
-                probs = compute_exceedance(
-                    field, threshold_path=thr_path,
-                    init_date=pd.Timestamp(fcstdate),
-                    window=win, percentile=pct, var=var,
-                    lon_slice=lon_slice, lat_slice=lat_slice,
+                group, model = mid.split('-', 1)
+                # New threshold layout:
+                # <hc_root>/{var}{lev}/daily/percentiles/{model}-{group}/{var}_{model}-{group}/{var}_{group}-{model}_{mmdd}.95p.nc
+                thr_dir = os.path.join(
+                    hc_root,
+                    f"{var}{lev}",
+                    "daily",
+                    "percentiles",
+                    f"{model}-{group}",
+                    f"{var}_{model}-{group}",
                 )
-                
-                # Write probabilities to file
-                out_file=os.path.join(out_data, f"exceed_{mid}_{var}_{region_name}_{fcstdate}.nc")
-                probs.to_netcdf(out_file)
-                
-                # summary plot (mean across windows)
-                out_png = os.path.join(out_images, f"exceed_{mid}_{var}_{region_name}_{fcstdate}.png")
-                title   = f"Exceedance Prob (avg windows) – {mid} {var} – {region_name} – {fcstdate}"
-                plot_exceedance_summary(probs, title, out_png)
-                print(f"[SAVE] {out_png}")
+
+                thr_path = nearest_mmdd_threshold(
+                    thr_dir,
+                    var,
+                    group,
+                    model,
+                    mmdd,
+                    pct,
+                    max_offset_days=max_fallback_days,
+                )
+                if not thr_path:
+                    candidate_pattern = os.path.join(thr_dir, f"{var}_{group}-{model}_*.{pct}p.nc")
+                    has_candidates = bool(glob.glob(candidate_pattern))
+                    if has_candidates:
+                        print(f"[WARN] No threshold within +/-{max_fallback_days} days for {mid}; skipping model.")
+                    else:
+                        print(f"[WARN] Missing threshold files for {mid} under: {thr_dir}")
+                    _remove_stale_exceedance_outputs(out_data, mid, var, fcstdate, "nc")
+                    _remove_stale_exceedance_outputs(out_images, mid, var, fcstdate, "png")
+                    continue
+                if f"_{mmdd}." not in os.path.basename(thr_path):
+                    print(f"[INFO] Using nearest threshold for {mid}: {os.path.basename(thr_path)}")
+
+                for r in cfg.get('regions', []):
+                    region_name = r['name']
+                    bounds = r.get('subx', {})
+                    lon_slice = tuple(bounds.get('lon', [])) if 'lon' in bounds else None
+                    lat_slice = tuple(bounds.get('lat', [])) if 'lat' in bounds else None
+
+                    field = ds_full[var].sel(model=mid).mean('M')
+                    probs = compute_exceedance(
+                        field,
+                        threshold_path=thr_path,
+                        init_date=pd.Timestamp(fcstdate),
+                        window=win,
+                        percentile=pct,
+                        var=var,
+                        lon_slice=lon_slice,
+                        lat_slice=lat_slice,
+                    )
+
+                    out_file = os.path.join(out_data, f"exceed_{mid}_{var}_{region_name}_{fcstdate}.nc")
+                    probs.to_netcdf(out_file)
+
+                    out_png = os.path.join(out_images, f"exceed_{mid}_{var}_{region_name}_{fcstdate}.png")
+                    title = f"Exceedance Prob (avg windows) – {mid} {var} – {region_name} – {fcstdate}"
+                    plotted = plot_exceedance_summary(probs, title, out_png)
+                    if plotted:
+                        print(f"[SAVE] {out_png}")
+                    else:
+                        print(f"[WARN] Skipped exceedance plot for {mid} {region_name} (non-plottable output).")
+
+                processed_models.append(mid)
+
+            if not processed_models:
+                print("[WARN] Exceedance skipped (no model-specific threshold files found).")
         else:
-            print("[WARN] Exceedance skipped (no thresholds path or model/var absent).")
+            print(f"[WARN] Exceedance skipped (variable '{var}' not present in model dataset).")
 
     # ---- Manifest ----
     manifest = {
