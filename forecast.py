@@ -61,6 +61,157 @@ def _remove_stale_exceedance_outputs(out_dir: str, model_id: str, var: str, fcst
         except OSError as exc:
             print(f"[WARN] Failed to remove stale output {path}: {exc}")
 
+
+def _remove_stale_legacy_products(out_images: str) -> None:
+    patterns = [
+        "2mTemp*.png",
+        "Precip*.png",
+        "500hPaGeopotentialHeight*.png",
+    ]
+    removed = 0
+    for pattern in patterns:
+        for path in glob.glob(os.path.join(out_images, pattern)):
+            try:
+                os.remove(path)
+                removed += 1
+            except OSError as exc:
+                print(f"[WARN] Failed to remove stale legacy image {path}: {exc}")
+    if removed:
+        print(f"[INFO] Removed {removed} stale legacy product image(s).")
+
+
+def _prepare_north_america_view(da: xr.DataArray) -> xr.DataArray:
+    da_plot = da.assign_coords(lon=xr.where(da["lon"] > 180, da["lon"] - 360, da["lon"])).sortby("lon")
+    return da_plot.sel(lon=slice(-170, -30), lat=slice(10, 80))
+
+
+def _plot_weekly_tas_panels(ds_subx: xr.Dataset, out_images: str, fcstdate: str) -> None:
+    if "tas" not in ds_subx:
+        print("[WARN] Skipping temperature panel plots (tas not present).")
+        return
+
+    import math
+    import matplotlib.pyplot as plt
+    import matplotlib.colors as mcolors
+    import cartopy.crs as ccrs
+    import cartopy.feature as cfeature
+
+    models = [str(m) for m in ds_subx["model"].values if str(m) != "SUBC-MME"]
+    models.append("SUBC-MME")
+
+    ncols = 3
+    nrows = math.ceil(len(models) / ncols)
+    levels = np.array([-4, -3, -2.5, -2, -1.5, -1, -0.2, 0.2, 0.5, 1, 1.5, 2, 2.5, 3, 4])
+    cmap = plt.get_cmap("RdYlBu_r", len(levels) - 1)
+    norm = mcolors.BoundaryNorm(levels, cmap.N)
+
+    for week in [1, 2, 3, 4]:
+        fig, axes = plt.subplots(
+            nrows,
+            ncols,
+            figsize=(4.7 * ncols, 2.7 * nrows + 1.3),
+            subplot_kw={"projection": ccrs.PlateCarree()},
+            squeeze=False,
+        )
+        fig.suptitle(
+            f"SubX Week {week} 2m Temperature Anomalies (C): Valid week ending "
+            f"{pd.Timestamp(fcstdate) + pd.Timedelta(days=(week * 7 + 1)):%b %d}",
+            fontsize=15,
+            y=0.99,
+        )
+
+        mappable = None
+        for idx, model_id in enumerate(models):
+            row, col = divmod(idx, ncols)
+            ax = axes[row][col]
+            ax.set_extent([-170, -30, 10, 80], crs=ccrs.PlateCarree())
+            ax.coastlines("110m", linewidth=0.8)
+            ax.add_feature(cfeature.BORDERS, linewidth=0.4)
+            ax.add_feature(cfeature.STATES, linewidth=0.2)
+
+            da = ds_subx["tas"].sel(model=model_id, week=week)
+            da = _prepare_north_america_view(da)
+
+            finite = np.isfinite(da.values)
+            if finite.any():
+                mappable = ax.contourf(
+                    da["lon"],
+                    da["lat"],
+                    da,
+                    levels=levels,
+                    cmap=cmap,
+                    norm=norm,
+                    transform=ccrs.PlateCarree(),
+                    extend="both",
+                )
+            else:
+                ax.text(0.5, 0.5, "No data", transform=ax.transAxes, ha="center", va="center", fontsize=10)
+            ax.set_title(model_id, fontsize=10)
+
+        for idx in range(len(models), nrows * ncols):
+            row, col = divmod(idx, ncols)
+            axes[row][col].axis("off")
+
+        if mappable is not None:
+            cbar = fig.colorbar(mappable, ax=axes, orientation="horizontal", fraction=0.05, pad=0.08)
+            cbar.set_label("C")
+
+        out_png = os.path.join(out_images, f"2mTempNorthAmericaWeek{week}.png")
+        plt.tight_layout(rect=[0, 0.05, 1, 0.96])
+        fig.savefig(out_png, dpi=150, bbox_inches="tight")
+        plt.close(fig)
+        print(f"[SAVE] {out_png}")
+
+    da_34 = ds_subx["tas"].sel(week=[3, 4]).mean("week")
+    fig, axes = plt.subplots(
+        nrows,
+        ncols,
+        figsize=(4.7 * ncols, 2.7 * nrows + 1.3),
+        subplot_kw={"projection": ccrs.PlateCarree()},
+        squeeze=False,
+    )
+    fig.suptitle("SubX Weeks 3&4 2m Temperature Anomalies (C)", fontsize=15, y=0.99)
+
+    mappable = None
+    for idx, model_id in enumerate(models):
+        row, col = divmod(idx, ncols)
+        ax = axes[row][col]
+        ax.set_extent([-170, -30, 10, 80], crs=ccrs.PlateCarree())
+        ax.coastlines("110m", linewidth=0.8)
+        ax.add_feature(cfeature.BORDERS, linewidth=0.4)
+        ax.add_feature(cfeature.STATES, linewidth=0.2)
+
+        da = _prepare_north_america_view(da_34.sel(model=model_id))
+        finite = np.isfinite(da.values)
+        if finite.any():
+            mappable = ax.contourf(
+                da["lon"],
+                da["lat"],
+                da,
+                levels=levels,
+                cmap=cmap,
+                norm=norm,
+                transform=ccrs.PlateCarree(),
+                extend="both",
+            )
+        else:
+            ax.text(0.5, 0.5, "No data", transform=ax.transAxes, ha="center", va="center", fontsize=10)
+        ax.set_title(model_id, fontsize=10)
+
+    for idx in range(len(models), nrows * ncols):
+        row, col = divmod(idx, ncols)
+        axes[row][col].axis("off")
+
+    if mappable is not None:
+        cbar = fig.colorbar(mappable, ax=axes, orientation="horizontal", fraction=0.05, pad=0.08)
+        cbar.set_label("C")
+
+    out_png = os.path.join(out_images, "2mTempNorthAmericaWeeks3&4.png")
+    plt.tight_layout(rect=[0, 0.05, 1, 0.96])
+    fig.savefig(out_png, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    print(f"[SAVE] {out_png}")
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--config', required=True, help='Path to config.yaml')
@@ -87,6 +238,7 @@ def main():
     out_data   = os.path.join(out_weekly, fcstdate, 'data')
     os.makedirs(out_images, exist_ok=True)
     os.makedirs(out_data,   exist_ok=True)
+    _remove_stale_legacy_products(out_images)
 
     ds_anoms_by_model = []
     ds_full_by_model  = []
@@ -228,6 +380,8 @@ def main():
         nc_out = os.path.join(out_data, f"subx_mme_anoms_wk_1-4_{fcstdate}.nc")
         ds_subx.to_netcdf(nc_out)
         print(f"[SAVE] {nc_out}")
+
+    _plot_weekly_tas_panels(ds_subx, out_images, fcstdate)
 
     # ---- Exceedance for all available models ----
     if ds_full_by_model:
