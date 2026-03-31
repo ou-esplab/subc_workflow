@@ -82,7 +82,90 @@ def _remove_stale_legacy_products(out_images: str) -> None:
 
 def _prepare_domain_view(da: xr.DataArray, lon_bounds: tuple[float, float], lat_bounds: tuple[float, float]) -> xr.DataArray:
     da_plot = da.assign_coords(lon=xr.where(da["lon"] > 180, da["lon"] - 360, da["lon"])).sortby("lon")
-    return da_plot.sel(lon=slice(lon_bounds[0], lon_bounds[1]), lat=slice(lat_bounds[0], lat_bounds[1]))
+
+    def _slice_for_coord(coord: xr.DataArray, low: float, high: float) -> slice:
+        if coord.size == 0:
+            return slice(low, high)
+        first = float(coord.values[0])
+        last = float(coord.values[-1])
+        if first <= last:
+            return slice(low, high)
+        return slice(high, low)
+
+    lon_sel = _slice_for_coord(da_plot["lon"], lon_bounds[0], lon_bounds[1])
+    lat_sel = _slice_for_coord(da_plot["lat"], lat_bounds[0], lat_bounds[1])
+    return da_plot.sel(lon=lon_sel, lat=lat_sel)
+
+
+def _unique(items: list[str]) -> list[str]:
+    out: list[str] = []
+    for item in items:
+        if item and item not in out:
+            out.append(item)
+    return out
+
+
+def _candidate_model_names(group: str, server_model: str, model_map: dict) -> list[str]:
+    mapped = model_map.get(f"{group}-{server_model}", model_map.get(server_model, server_model))
+    return _unique([mapped, server_model])
+
+
+def _extract_init_date(path: str) -> pd.Timestamp | None:
+    base = os.path.basename(path)
+    if not base.endswith(".daily.nc"):
+        return None
+    token = base[: -len(".daily.nc")].rsplit("_", 1)
+    if len(token) != 2 or len(token[1]) != 8 or not token[1].isdigit():
+        return None
+    try:
+        return pd.Timestamp(token[1])
+    except Exception:
+        return None
+
+
+def _pick_realtime_file(
+    rt_root: str,
+    group: str,
+    model_candidates: list[str],
+    var: str,
+    fcst_ts: pd.Timestamp,
+    week_start: pd.Timestamp,
+    week_end: pd.Timestamp,
+) -> tuple[str, str, pd.Timestamp] | None:
+    in_week: list[tuple[pd.Timestamp, str, str]] = []
+
+    for candidate in model_candidates:
+        patt = f"{rt_root}/{group}-{candidate}/forecast/{var}/{var}_{group}-{candidate}_*.daily.nc"
+        for path in sorted(glob.glob(patt)):
+            init_ts = _extract_init_date(path)
+            if init_ts is None or init_ts > fcst_ts:
+                continue
+            rec = (init_ts, path, candidate)
+            if week_start <= init_ts <= week_end:
+                in_week.append(rec)
+
+    if in_week:
+        init_ts, path, candidate = max(in_week, key=lambda rec: rec[0])
+        return path, candidate, init_ts
+    return None
+
+
+def _resolve_climo_file(
+    hc_root: str,
+    group: str,
+    var: str,
+    plev,
+    mmdd_last: str,
+    model_candidates: list[str],
+) -> str | None:
+    for candidate in model_candidates:
+        climo_fname = (
+            f"{hc_root}/{var}{plev}/daily/climo/{group}-{candidate}/"
+            f"{var}_{group}-{candidate}_{mmdd_last}.climo.p.nc"
+        )
+        if os.path.exists(climo_fname):
+            return climo_fname
+    return None
 
 
 def _plot_weekly_panels(
@@ -97,6 +180,7 @@ def _plot_weekly_panels(
     lon_bounds: tuple[float, float],
     lat_bounds: tuple[float, float],
     levels: np.ndarray,
+    panel_models: list[str] | None = None,
 ) -> None:
     if var_name not in ds_subx:
         print(f"[WARN] Skipping {filename_prefix} plots ({var_name} not present).")
@@ -108,8 +192,15 @@ def _plot_weekly_panels(
     import cartopy.crs as ccrs
     import cartopy.feature as cfeature
 
-    models = [str(m) for m in ds_subx["model"].values if str(m) != "SUBC-MME"]
-    models.append("SUBC-MME")
+    available_models = [str(m) for m in ds_subx["model"].values]
+    available_set = set(available_models)
+    
+    # Always show all available models from the dataset, ordered with SUBC-MME last
+    real_models = [m for m in available_models if m != "SUBC-MME"]
+    if "SUBC-MME" in available_set:
+        models = real_models + ["SUBC-MME"]
+    else:
+        models = real_models
 
     ncols = 3
     nrows = math.ceil(len(models) / ncols)
@@ -224,7 +315,7 @@ def _plot_weekly_panels(
     print(f"[SAVE] {out_png}")
 
 
-def _plot_legacy_weekly_products(ds_subx: xr.Dataset, out_images: str, fcstdate: str) -> None:
+def _plot_legacy_weekly_products(ds_subx: xr.Dataset, out_images: str, fcstdate: str, panel_models: list[str]) -> None:
     _plot_weekly_panels(
         ds_subx,
         var_name="tas",
@@ -237,6 +328,7 @@ def _plot_legacy_weekly_products(ds_subx: xr.Dataset, out_images: str, fcstdate:
         lon_bounds=(-170, -30),
         lat_bounds=(10, 80),
         levels=np.array([-4, -3, -2.5, -2, -1.5, -1, -0.2, 0.2, 0.5, 1, 1.5, 2, 2.5, 3, 4]),
+        panel_models=panel_models,
     )
 
     _plot_weekly_panels(
@@ -251,6 +343,7 @@ def _plot_legacy_weekly_products(ds_subx: xr.Dataset, out_images: str, fcstdate:
         lon_bounds=(-180, 180),
         lat_bounds=(-60, 80),
         levels=np.array([-35, -25, -15, -10, -5, -2, 2, 5, 10, 15, 25, 35]),
+        panel_models=panel_models,
     )
     _plot_weekly_panels(
         ds_subx,
@@ -264,6 +357,7 @@ def _plot_legacy_weekly_products(ds_subx: xr.Dataset, out_images: str, fcstdate:
         lon_bounds=(-170, -30),
         lat_bounds=(10, 80),
         levels=np.array([-35, -25, -15, -10, -5, -2, 2, 5, 10, 15, 25, 35]),
+        panel_models=panel_models,
     )
     _plot_weekly_panels(
         ds_subx,
@@ -277,6 +371,7 @@ def _plot_legacy_weekly_products(ds_subx: xr.Dataset, out_images: str, fcstdate:
         lon_bounds=(40, 64),
         lat_bounds=(24, 40),
         levels=np.array([-35, -25, -15, -10, -5, -2, 2, 5, 10, 15, 25, 35]),
+        panel_models=panel_models,
     )
     _plot_weekly_panels(
         ds_subx,
@@ -290,6 +385,7 @@ def _plot_legacy_weekly_products(ds_subx: xr.Dataset, out_images: str, fcstdate:
         lon_bounds=(-73, -60),
         lat_bounds=(0, 13),
         levels=np.array([-35, -25, -15, -10, -5, -2, 2, 5, 10, 15, 25, 35]),
+        panel_models=panel_models,
     )
 
     _plot_weekly_panels(
@@ -304,6 +400,7 @@ def _plot_legacy_weekly_products(ds_subx: xr.Dataset, out_images: str, fcstdate:
         lon_bounds=(-180, 180),
         lat_bounds=(10, 90),
         levels=np.array([-200, -150, -100, -60, -30, -10, 10, 30, 60, 100, 150, 200]),
+        panel_models=panel_models,
     )
 
 def main():
@@ -327,6 +424,9 @@ def main():
     out_weekly = cfg['paths']['out_weekly']
     lon_conv   = cfg.get('lon_convention', '0_360')
     week_dates = fcst_week_dates(fcstdate)
+    fcst_ts = pd.Timestamp(fcstdate)
+    init_window_start = fcst_ts - pd.Timedelta(days=7)
+    init_window_end = fcst_ts - pd.Timedelta(days=1)
 
     out_images = os.path.join(out_weekly, fcstdate, 'images')
     out_data   = os.path.join(out_weekly, fcstdate, 'data')
@@ -340,8 +440,8 @@ def main():
     for m in cfg["models"]:
         group = m["group"]
         server_model = m["name"]
-        local_model  = model_map.get(server_model, server_model)   # <-- USE THIS LOCALLY
-        local_model  = model_map.get(server_model, model_map.get(f"{group}-{server_model}", server_model))
+        model_candidates = _candidate_model_names(group, server_model, model_map)
+        local_model = model_candidates[0]
 
         varlist, levlist = m["vars"], m["levels"]
 
@@ -353,21 +453,31 @@ def main():
         var_dsets_full = []
 
         for var, plev in zip(varlist, levlist):
-            patt = f"{rt_root}/{group}-{local_model}/forecast/{var}/{var}_{group}-{local_model}_*.daily.nc"
-            files = sorted(glob.glob(patt))
-            if not files:
-                print(f"  - no files matched {patt}")
+            chosen = _pick_realtime_file(
+                rt_root=rt_root,
+                group=group,
+                model_candidates=model_candidates,
+                var=var,
+                fcst_ts=fcst_ts,
+                week_start=init_window_start,
+                week_end=init_window_end,
+            )
+            if not chosen:
+                print(
+                    f"  - missing this week under candidates: "
+                    f"{', '.join(f'{group}-{name}' for name in model_candidates)}"
+                )
                 continue
 
-            ds = xr.open_mfdataset(files, combine='by_coords')
+            fp, chosen_model_name, chosen_init = chosen
+            ds = xr.open_dataset(fp)
+            print(f"  [INFO] Using init for {var}: {group}-{chosen_model_name} {chosen_init:%Y%m%d}")
+
+            model_id_local = f"{group}-{chosen_model_name}"
 
             if "P" in ds[var].dims:
                 ds = ds.sel(P=int(plev))
             ds["S"] = ds["S"].dt.floor("D")
-            ds = ds.sel(S=ds["S"].isin(week_dates.values))
-            if ds.S.size == 0:
-                print(f"  - missing this week: {var}")
-                continue
             ds = ds.dropna("S", how="all")
             if ds.S.size == 0:
                 print(f"  - all missing after drop: {var}")
@@ -381,14 +491,11 @@ def main():
             ds["lat"].attrs["units"] = "degrees_north"
             ds = ensure_lon(ds, lon_conv).assign_coords(model=model_id_local)   # <-- local id
 
-            # ---- hc_root climo: use local_model ----
+            # ---- Climatology from precomputed files ----
             mmdd_last   = pd.to_datetime(week_dates[-1]).strftime("%m%d")
-            climo_fname = (
-                f"{hc_root}/{var}{plev}/daily/climo/{group}-{local_model}/"
-                f"{var}_{group}-{local_model}_{mmdd_last}.climo.p.nc"
-            )
-            if not os.path.exists(climo_fname):
-                print(f"  - missing climatology {climo_fname}")
+            climo_fname = _resolve_climo_file(hc_root, group, var, plev, mmdd_last, model_candidates)
+            if not climo_fname:
+                print(f"  - missing climatology for {group}-{chosen_model_name} {var} mmdd={mmdd_last}")
                 continue
             clim = xr.open_dataset(climo_fname).rename({"time": "lead"})
 
@@ -414,6 +521,21 @@ def main():
                 ds = ds.rename({var: vout})
 
             em = ds.mean("M").squeeze()
+            if var == "tas":
+                tas_field = em[vout]
+                finite_tas = tas_field.where(np.isfinite(tas_field), drop=True)
+                if finite_tas.size == 0:
+                    print(f"  - skipping {group}-{chosen_model_name} tas: no finite realtime values")
+                    continue
+                tas_median = float(finite_tas.median().values)
+                # Guardrail: SubX tas should be in a physically plausible Kelvin range.
+                # If values are far outside, skip the model-variable to avoid misleading maps.
+                if tas_median < 180.0 or tas_median > 330.0:
+                    print(
+                        f"  - skipping {group}-{chosen_model_name} tas: implausible median "
+                        f"{tas_median:.2f} K (expected ~180-330 K)"
+                    )
+                    continue
             anom = em[vout] - clim[var]
             if "dayofyear" in anom.dims:
                 anom = anom.drop_dims("dayofyear")
@@ -454,14 +576,16 @@ def main():
     print("[DBG] ds_models vars:", list(ds_models.data_vars))
     ds_week   = weekly_reduce(ds_models, fcstdate, nweeks=4)
     
-    ds_mme = ds_week.mean('model').assign_coords(
-        S=np.datetime64(pd.Timestamp(fcstdate), 'ns'),
-        model='SUBC-MME',
-        nens=ds_week['nens'].sum(),
-        ic_dates=pd.to_datetime(fcstdate).strftime('%Y%m%d'),
-    )
-
-    ds_subx = xr.concat([ds_week, ds_mme], dim='model')
+    if int(ds_week.sizes.get('model', 0)) > 1:
+        ds_mme = ds_week.mean('model').assign_coords(
+            S=np.datetime64(pd.Timestamp(fcstdate), 'ns'),
+            model='SUBC-MME',
+            nens=ds_week['nens'].sum(),
+            ic_dates=pd.to_datetime(fcstdate).strftime('%Y%m%d'),
+        )
+        ds_subx = xr.concat([ds_week, ds_mme], dim='model')
+    else:
+        ds_subx = ds_week
     
     # Clean up attributes
     for k in ("week_start", "week_end"):
@@ -475,7 +599,9 @@ def main():
         ds_subx.to_netcdf(nc_out)
         print(f"[SAVE] {nc_out}")
 
-    _plot_legacy_weekly_products(ds_subx, out_images, fcstdate)
+    panel_models = [f"{m['group']}-{m['name']}" for m in cfg.get("models", [])]
+    panel_models.append("SUBC-MME")
+    _plot_legacy_weekly_products(ds_subx, out_images, fcstdate, panel_models)
 
     # ---- Exceedance for all available models ----
     if ds_full_by_model:
