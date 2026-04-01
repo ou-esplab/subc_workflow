@@ -22,6 +22,7 @@ from typing import List, Tuple, Optional, Dict
 import os
 import glob
 import json
+import re
 from datetime import datetime, timedelta
 
 import numpy as np
@@ -57,29 +58,43 @@ def nearest_mmdd_threshold(
     pct: int,
     max_offset_days: int = 7,
 ) -> str | None:
-    """Return the exact threshold file for MMDD if present, else the nearest MMDD file within max_offset_days."""
-    exact = os.path.join(thr_dir, f"{var}_{group}-{model}_{mmdd}.{pct}p.nc")
-    if os.path.exists(exact):
-        return exact
+    """Return exact MMDD threshold file if present, else nearest MMDD file within max_offset_days.
 
+    Canonical filename form:
+    - {var}_{group}-{model}_{MMDD}.{pct}p.nc
+    """
     candidates = sorted(glob.glob(os.path.join(thr_dir, f"{var}_{group}-{model}_*.{pct}p.nc")))
     if not candidates:
         return None
 
+    mmdd_re = re.compile(
+        rf"^{re.escape(var)}_{re.escape(group)}-{re.escape(model)}_(\d{{4}})\.{pct}p\.nc$"
+    )
+
+    parsed: list[tuple[str, str]] = []
+    for path in candidates:
+        stem = os.path.basename(path)
+        match = mmdd_re.match(stem)
+        if not match:
+            continue
+        parsed.append((path, match.group(1)))
+
+    if not parsed:
+        return None
+
+    for path, mmdd_token in parsed:
+        if mmdd_token == mmdd:
+            return path
+
     target = datetime.strptime(mmdd, "%m%d")
 
-    def score(path: str) -> int:
-        stem = os.path.basename(path)
-        token = stem.rsplit("_", 1)[-1].split(".")[0]
-        try:
-            d = datetime.strptime(token, "%m%d")
-            diff = abs((d - target).days)
-            return min(diff, 366 - diff)
-        except ValueError:
-            return 10**9
+    def score(mmdd_token: str) -> int:
+        d = datetime.strptime(mmdd_token, "%m%d")
+        diff = abs((d - target).days)
+        return min(diff, 366 - diff)
 
-    best_path = min(candidates, key=score)
-    best_offset = score(best_path)
+    best_path, best_token = min(parsed, key=lambda rec: score(rec[1]))
+    best_offset = score(best_token)
     if best_offset > max_offset_days:
         return None
     return best_path
@@ -223,15 +238,34 @@ def compute_exceedance(
     field = ds_field.copy()
     field = field.assign_attrs({})  # scrub attrs to avoid netCDF attr issues
 
-    # --------- 1) Units and regional subset ----------
-    if var == 'pr' or (hasattr(field, 'name') and field.name == 'pr'):
-        # kg m^-2 s^-1 -> mm/day
-        field = field * 86400.0
+    # --------- 1) Regional subset ----------
+    # Do NOT convert units here: threshold files are in the same native units
+    # as the model output (kg m^-2 s^-1); converting only the forecast would
+    # cause a systematic unit mismatch and make everything exceed the threshold.
+
+    def _ordered_slice(arr: xr.DataArray, dim: str, bounds: Tuple[float, float]) -> xr.DataArray:
+        lo, hi = bounds
+        coord = arr[dim]
+        if coord.size == 0:
+            return arr
+        first = float(coord.values[0])
+        last = float(coord.values[-1])
+        if first <= last:
+            return arr.sel({dim: slice(lo, hi)})
+        return arr.sel({dim: slice(hi, lo)})
 
     if lon_slice:
-        field = field.sel(lon=slice(*lon_slice))
+        field = _ordered_slice(field, 'lon', lon_slice)
     if lat_slice:
-        field = field.sel(lat=slice(*lat_slice))
+        field = _ordered_slice(field, 'lat', lat_slice)
+
+    for dim in ('lat', 'lon'):
+        if dim in field.sizes and int(field.sizes[dim]) == 0:
+            raise ValueError(
+                f"compute_exceedance: empty regional subset after {dim} selection; "
+                f"lon_slice={lon_slice}, lat_slice={lat_slice}, "
+                f"coord_range=({float(ds_field[dim].values[0])}, {float(ds_field[dim].values[-1])})"
+            )
 
     # Must have 'lead'
     if 'lead' not in field.sizes:
@@ -306,6 +340,14 @@ def compute_exceedance(
             [c for c in empty.coords if c not in ('lat', 'lon')], errors='ignore'
         )
 
+    # Dask-backed arrays can carry pathological 0-sized chunks that break
+    # sliding-window overlap checks. Materialize both arrays so rolling is
+    # deterministic across file/chunk layouts.
+    if getattr(field, "chunks", None) is not None:
+        field = field.load()
+    if getattr(thr_var, "chunks", None) is not None:
+        thr_var = thr_var.load()
+
     rolled_fcst   = field.rolling(lead=window).construct("window_dim")
     rolled_thresh = thr_var.rolling(lead=window).construct("window_dim")
 
@@ -349,7 +391,7 @@ def compute_exceedance(
 
     return out
 # ---------------------- Plotting ---------------------- #
-def plot_exceedance_summary(probs, title, out_png, cmap='plasma'):
+def plot_exceedance_summary(probs, title, out_png, cmap='Reds', projection='platecarree'):
     """
     Plot mean across time_window for exceedance probabilities.
     probs: xr.DataArray with dims including 'time_window','lat','lon'
@@ -394,9 +436,22 @@ def plot_exceedance_summary(probs, title, out_png, cmap='plasma'):
         print(f"[WARN] Exceedance map has no finite values; skipping plot: {title}")
         return False
 
-    fig, ax = plt.subplots(figsize=(8, 4), subplot_kw={'projection': ccrs.PlateCarree()})
+    map_projection = ccrs.Robinson() if projection == 'robinson' else ccrs.PlateCarree()
+    fig, ax = plt.subplots(figsize=(8, 4), subplot_kw={'projection': map_projection})
+    lon_vals = np.asarray(data['lon'].values, dtype=float)
+    lat_vals = np.asarray(data['lat'].values, dtype=float)
+    if projection == 'robinson':
+        ax.set_global()
+    elif lon_vals.size and lat_vals.size:
+        ax.set_extent([
+            float(np.nanmin(lon_vals)),
+            float(np.nanmax(lon_vals)),
+            float(np.nanmin(lat_vals)),
+            float(np.nanmax(lat_vals)),
+        ], crs=ccrs.PlateCarree())
+
     data.plot(ax=ax, transform=ccrs.PlateCarree(), cmap=cmap,
-              vmin=0, vmax=100, cbar_kwargs={'label':'%','shrink':0.8})
+              vmin=5, vmax=90, extend='both', cbar_kwargs={'label':'%','shrink':0.8})
     ax.coastlines('110m', linewidth=1)
     ax.add_feature(cfeature.BORDERS, linewidth=0.6)
     ax.add_feature(cfeature.STATES,  linewidth=0.4)
@@ -407,7 +462,7 @@ def plot_exceedance_summary(probs, title, out_png, cmap='plasma'):
     return True
 
 
-def plot_exceedance_panels(probs, init_date, window, out_png_prefix, cmap='plasma'):
+def plot_exceedance_panels(probs, init_date, window, out_png_prefix, cmap='Reds'):
     """
     Plot one PNG per time_window step.
     Writes: <out_png_prefix>_stepNN.png
@@ -419,8 +474,17 @@ def plot_exceedance_panels(probs, init_date, window, out_png_prefix, cmap='plasm
     for i in range(probs.sizes['time_window']):
         fig, ax = plt.subplots(figsize=(8, 4), subplot_kw={'projection': ccrs.PlateCarree()})
         data = probs.isel(time_window=i)
+        lon_vals = np.asarray(data['lon'].values, dtype=float)
+        lat_vals = np.asarray(data['lat'].values, dtype=float)
+        if lon_vals.size and lat_vals.size:
+            ax.set_extent([
+                float(np.nanmin(lon_vals)),
+                float(np.nanmax(lon_vals)),
+                float(np.nanmin(lat_vals)),
+                float(np.nanmax(lat_vals)),
+            ], crs=ccrs.PlateCarree())
         data.plot(ax=ax, transform=ccrs.PlateCarree(), cmap=cmap,
-                  vmin=0, vmax=100, cbar_kwargs={'label':'%','shrink':0.8})
+              vmin=5, vmax=90, extend='both', cbar_kwargs={'label':'%','shrink':0.8})
         ax.coastlines('110m', linewidth=1)
         ax.add_feature(cfeature.BORDERS, linewidth=0.6)
         ax.add_feature(cfeature.STATES,  linewidth=0.4)

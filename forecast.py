@@ -53,13 +53,63 @@ from utils.subc_pycpt_utils import (
 
 
 def _remove_stale_exceedance_outputs(out_dir: str, model_id: str, var: str, fcstdate: str, suffix: str) -> None:
-    pattern = os.path.join(out_dir, f"exceed_{model_id}_{var}_*_{fcstdate}.{suffix}")
+    pattern = os.path.join(out_dir, f"exceed_{model_id}_{var}_*_{fcstdate}*.{suffix}")
     for path in glob.glob(pattern):
         try:
             os.remove(path)
             print(f"[INFO] Removed stale exceedance output: {path}")
         except OSError as exc:
             print(f"[WARN] Failed to remove stale output {path}: {exc}")
+
+
+def _select_week_window_from_probs(
+    data: xr.DataArray,
+    week_end: pd.Timestamp,
+    week_num: int,
+    region_name: str,
+    allow_nearest_days: int = 3,
+) -> xr.DataArray:
+    if "time_window" not in data.dims:
+        return data
+    nwin = int(data.sizes.get("time_window", 0))
+    if nwin == 0:
+        return data
+
+    target_end = np.datetime64(pd.Timestamp(week_end))
+    tw = np.asarray(data["time_window"].values)
+    if target_end in tw:
+        return data.sel(time_window=target_end)
+
+    if np.issubdtype(data["time_window"].dtype, np.datetime64):
+        nearest_idx = int(np.argmin(np.abs(tw - target_end)))
+        chosen = pd.Timestamp(tw[nearest_idx])
+        delta_days = abs((chosen - pd.Timestamp(week_end)).days)
+        if delta_days <= allow_nearest_days:
+            print(
+                f"[INFO] Using nearest time_window for week {week_num} in {region_name}: "
+                f"target_end={pd.Timestamp(week_end).date()} chosen={chosen.date()}"
+            )
+            return data.isel(time_window=nearest_idx)
+
+    print(
+        f"[WARN] Missing time_window for week {week_num} in {region_name}; "
+        f"target_end={pd.Timestamp(week_end).date()}"
+    )
+    return data.isel(time_window=0) * np.nan
+
+
+def _remove_stale_exceedance_model_images(out_images: str, fcstdate: str) -> None:
+    pattern = os.path.join(out_images, f"exceed_*_{fcstdate}.png")
+    for path in glob.glob(pattern):
+        fname = os.path.basename(path)
+        # Keep only the new week-specific panel files (.._wk1.png .. _wk4.png).
+        if fname.startswith("exceed_panel_") and "_wk" in fname:
+            continue
+        try:
+            os.remove(path)
+            print(f"[INFO] Removed stale exceedance model image: {path}")
+        except OSError as exc:
+            print(f"[WARN] Failed to remove stale exceedance model image {path}: {exc}")
 
 
 def _remove_stale_legacy_products(out_images: str) -> None:
@@ -133,6 +183,7 @@ def _pick_realtime_file(
     week_end: pd.Timestamp,
 ) -> tuple[str, str, pd.Timestamp] | None:
     in_week: list[tuple[pd.Timestamp, str, str]] = []
+    any_valid: list[tuple[pd.Timestamp, str, str]] = []
 
     for candidate in model_candidates:
         patt = f"{rt_root}/{group}-{candidate}/forecast/{var}/{var}_{group}-{candidate}_*.daily.nc"
@@ -141,11 +192,15 @@ def _pick_realtime_file(
             if init_ts is None or init_ts > fcst_ts:
                 continue
             rec = (init_ts, path, candidate)
+            any_valid.append(rec)
             if week_start <= init_ts <= week_end:
                 in_week.append(rec)
 
     if in_week:
         init_ts, path, candidate = max(in_week, key=lambda rec: rec[0])
+        return path, candidate, init_ts
+    if any_valid:
+        init_ts, path, candidate = max(any_valid, key=lambda rec: rec[0])
         return path, candidate, init_ts
     return None
 
@@ -166,6 +221,67 @@ def _resolve_climo_file(
         if os.path.exists(climo_fname):
             return climo_fname
     return None
+
+
+def _resolve_panel_models(
+    available_models: list[str],
+    panel_models: list[str] | None,
+) -> list[str]:
+    available = _unique([str(m) for m in available_models])
+    available_set = set(available)
+
+    def _resolve_configured_model_id(configured_model: str) -> str:
+        if configured_model in available_set:
+            return configured_model
+
+        if configured_model.endswith("_5daily"):
+            stripped = configured_model[: -len("_5daily")]
+            if stripped in available_set:
+                return stripped
+
+        if "-" in configured_model:
+            group, _ = configured_model.split("-", 1)
+            group_prefix = f"{group}-"
+            for candidate in available:
+                if not candidate.startswith(group_prefix):
+                    continue
+                if candidate.startswith(configured_model) or configured_model.startswith(candidate):
+                    return candidate
+
+        return configured_model
+
+    preferred_order = [
+        "ESRL-FIMr1p1",
+        "RSMAS-CCSM4",
+        "EMC-GEFSv12_CPC",
+        "GMAO-GEOS_V2p1",
+        "NCEP-CFSv2",
+        "ECCC-GEPS8",
+        "SUBC-MME",
+    ]
+
+    if panel_models:
+        configured = _unique([str(m) for m in panel_models])
+        configured_set = set(configured)
+        configured_resolved = _unique([
+            _resolve_configured_model_id(m)
+            for m in configured
+            if m != "SUBC-MME"
+        ])
+        configured_resolved_set = set(configured_resolved)
+
+        models = [m for m in preferred_order if m in configured_resolved_set or m in available_set]
+        extras_configured = [m for m in configured_resolved if m not in models]
+        extras_available = [m for m in available if m not in models and m != "SUBC-MME"]
+        models.extend(extras_configured)
+        models.extend(extras_available)
+
+        if ("SUBC-MME" in configured_set or "SUBC-MME" in available_set) and "SUBC-MME" not in models:
+            models.append("SUBC-MME")
+        return models
+
+    real_models = [m for m in available if m != "SUBC-MME"]
+    return real_models + (["SUBC-MME"] if "SUBC-MME" in available_set else [])
 
 
 def _plot_weekly_panels(
@@ -189,51 +305,172 @@ def _plot_weekly_panels(
     import math
     import matplotlib.pyplot as plt
     import matplotlib.colors as mcolors
+    import matplotlib.path as mpath
     import cartopy.crs as ccrs
     import cartopy.feature as cfeature
 
     available_models = [str(m) for m in ds_subx["model"].values]
     available_set = set(available_models)
-    
-    # Always show all available models from the dataset, ordered with SUBC-MME last
-    real_models = [m for m in available_models if m != "SUBC-MME"]
-    if "SUBC-MME" in available_set:
-        models = real_models + ["SUBC-MME"]
-    else:
-        models = real_models
+
+    models = _resolve_panel_models(available_models, panel_models)
 
     ncols = 3
     nrows = math.ceil(len(models) / ncols)
-    cmap = plt.get_cmap("RdYlBu_r", len(levels) - 1)
+    # Choose colormap based on variable name.
+    # Precipitation uses brown (negative) to green (positive),
+    # while temperature/heights use blue (negative) to red (positive).
+    if "pr" in var_name:
+        cmap = plt.get_cmap("BrBG", len(levels) - 1)
+    elif "hgt" in var_name or "psl" in var_name:
+        cmap = plt.get_cmap("RdBu_r", len(levels) - 1)
+    else:
+        cmap = plt.get_cmap("RdBu_r", len(levels) - 1)
+    
     norm = mcolors.BoundaryNorm(levels, cmap.N)
+
+    is_polar_geopotential = ("hgt" in var_name) or ("zg" in var_name)
+    is_north_america = domain_name == "NorthAmerica"
+    is_global = domain_name in ("Global", "NorthernHemisphere")
+    is_regional = not is_polar_geopotential and not is_global
+    if is_polar_geopotential:
+        projection = ccrs.NorthPolarStereo()
+    elif is_regional:
+        projection = ccrs.PlateCarree()
+    else:
+        projection = ccrs.Robinson()
 
     for week in [1, 2, 3, 4]:
         fig, axes = plt.subplots(
             nrows,
             ncols,
-            figsize=(4.7 * ncols, 2.7 * nrows + 1.3),
-            subplot_kw={"projection": ccrs.PlateCarree()},
+            figsize=(4.7 * ncols, 3.15 * nrows + 1.7),
+            subplot_kw={"projection": projection},
             squeeze=False,
         )
+        valid_week_end = pd.Timestamp(fcstdate) + pd.Timedelta(days=(week * 7 + 1))
         fig.suptitle(
-            f"SubX Week {week} {title_prefix}: Valid week ending "
-            f"{pd.Timestamp(fcstdate) + pd.Timedelta(days=(week * 7 + 1)):%b %d}",
-            fontsize=15,
-            y=0.99,
+            f"SubX Week {week} {title_prefix}: Valid week ending {valid_week_end:%b %d, %Y}",
+            fontsize=14,
+            y=0.985,
         )
 
         mappable = None
         for idx, model_id in enumerate(models):
             row, col = divmod(idx, ncols)
             ax = axes[row][col]
+            if is_polar_geopotential:
+                ax.set_extent([-180, 180, 20, 90], crs=ccrs.PlateCarree())
+                theta = np.linspace(0.0, 2.0 * np.pi, 100)
+                center = np.array([0.5, 0.5])
+                radius = 0.5
+                circle = mpath.Path(np.column_stack([np.sin(theta), np.cos(theta)]) * radius + center)
+                ax.set_boundary(circle, transform=ax.transAxes)
+            elif is_regional:
+                ax.set_extent([lon_bounds[0], lon_bounds[1], lat_bounds[0], lat_bounds[1]], crs=ccrs.PlateCarree())
+            else:
+                ax.set_global()
+
+            if model_id in available_set:
+                ax.coastlines("110m", linewidth=0.8)
+                ax.add_feature(cfeature.BORDERS, linewidth=0.4)
+                if is_regional:
+                    ax.add_feature(cfeature.STATES, linewidth=0.2)
+                da = ds_subx[var_name].sel(model=model_id, week=week)
+                da = _prepare_domain_view(da, lon_bounds, lat_bounds)
+
+                finite = np.isfinite(da.values)
+                if finite.any():
+                    mappable = ax.contourf(
+                        da["lon"],
+                        da["lat"],
+                        da,
+                        levels=levels,
+                        cmap=cmap,
+                        norm=norm,
+                        transform=ccrs.PlateCarree(),
+                        extend="both",
+                    )
+                else:
+                    ax.text(0.5, 0.5, "No data", transform=ax.transAxes, ha="center", va="center", fontsize=10)
+            else:
+                ax.text(0.5, 0.5, "Missing model", transform=ax.transAxes, ha="center", va="center", fontsize=10)
+            try:
+                ax.spines["geo"].set_linewidth(0.8)
+            except Exception:
+                pass
+            # Extract IC date and ensemble count for title.
+            ic_date = ds_subx.coords.get("init_date")
+            if model_id in available_set and ic_date is not None and "model" in ic_date.dims:
+                ic_raw = ic_date.sel(model=model_id).item()
+                ic_date_str = str(ic_raw)[:10]
+            else:
+                ic_date_str = "Unknown"
+            if model_id in available_set and "nens" in ds_subx.coords and "model" in ds_subx["nens"].dims:
+                nens_raw = ds_subx["nens"].sel(model=model_id).item()
+                try:
+                    nens = int(nens_raw)
+                except (TypeError, ValueError):
+                    nens = 0
+            else:
+                nens = 0
+
+            if model_id in available_set:
+                ax.set_title(f"{model_id} (IC: {ic_date_str}; {nens} Ens)", fontsize=10, pad=4)
+            else:
+                ax.set_title(f"{model_id} (IC: N/A; N/A Ens)", fontsize=10, pad=4)
+
+        for idx in range(len(models), nrows * ncols):
+            row, col = divmod(idx, ncols)
+            axes[row][col].axis("off")
+
+        fig.subplots_adjust(top=0.90, bottom=0.16, left=0.04, right=0.98, wspace=0.07, hspace=0.30)
+        if mappable is not None:
+            cax = fig.add_axes([0.18, 0.06, 0.64, 0.03])
+            cbar = fig.colorbar(mappable, cax=cax, orientation="horizontal")
+            cbar.set_label(units, fontsize=10)
+
+        out_png = os.path.join(out_images, f"{filename_prefix}{domain_name}Week{week}.png")
+        fig.savefig(out_png, dpi=150)
+        plt.close(fig)
+        print(f"[SAVE] {out_png}")
+
+    da_34 = ds_subx[var_name].sel(week=[3, 4]).mean("week")
+    fig, axes = plt.subplots(
+        nrows,
+        ncols,
+        figsize=(4.7 * ncols, 3.15 * nrows + 1.7),
+        subplot_kw={"projection": projection},
+        squeeze=False,
+    )
+    valid_34_end = pd.Timestamp(fcstdate) + pd.Timedelta(days=29)
+    fig.suptitle(
+        f"SubX Week 3-4 {title_prefix}: Valid 2 weeks ending {valid_34_end:%b %d, %Y}",
+        fontsize=14,
+        y=0.985,
+    )
+
+    mappable = None
+    for idx, model_id in enumerate(models):
+        row, col = divmod(idx, ncols)
+        ax = axes[row][col]
+        if is_polar_geopotential:
+            ax.set_extent([-180, 180, 20, 90], crs=ccrs.PlateCarree())
+            theta = np.linspace(0.0, 2.0 * np.pi, 100)
+            center = np.array([0.5, 0.5])
+            radius = 0.5
+            circle = mpath.Path(np.column_stack([np.sin(theta), np.cos(theta)]) * radius + center)
+            ax.set_boundary(circle, transform=ax.transAxes)
+        elif is_regional:
             ax.set_extent([lon_bounds[0], lon_bounds[1], lat_bounds[0], lat_bounds[1]], crs=ccrs.PlateCarree())
+        else:
+            ax.set_global()
+
+        if model_id in available_set:
             ax.coastlines("110m", linewidth=0.8)
             ax.add_feature(cfeature.BORDERS, linewidth=0.4)
-            ax.add_feature(cfeature.STATES, linewidth=0.2)
-
-            da = ds_subx[var_name].sel(model=model_id, week=week)
-            da = _prepare_domain_view(da, lon_bounds, lat_bounds)
-
+            if is_regional:
+                ax.add_feature(cfeature.STATES, linewidth=0.2)
+            da = _prepare_domain_view(da_34.sel(model=model_id), lon_bounds, lat_bounds)
             finite = np.isfinite(da.values)
             if finite.any():
                 mappable = ax.contourf(
@@ -248,69 +485,186 @@ def _plot_weekly_panels(
                 )
             else:
                 ax.text(0.5, 0.5, "No data", transform=ax.transAxes, ha="center", va="center", fontsize=10)
-            ax.set_title(model_id, fontsize=10)
-
-        for idx in range(len(models), nrows * ncols):
-            row, col = divmod(idx, ncols)
-            axes[row][col].axis("off")
-
-        if mappable is not None:
-            cbar = fig.colorbar(mappable, ax=axes, orientation="horizontal", fraction=0.05, pad=0.08)
-            cbar.set_label(units)
-
-        out_png = os.path.join(out_images, f"{filename_prefix}{domain_name}Week{week}.png")
-        plt.tight_layout(rect=[0, 0.05, 1, 0.96])
-        fig.savefig(out_png, dpi=150, bbox_inches="tight")
-        plt.close(fig)
-        print(f"[SAVE] {out_png}")
-
-    da_34 = ds_subx[var_name].sel(week=[3, 4]).mean("week")
-    fig, axes = plt.subplots(
-        nrows,
-        ncols,
-        figsize=(4.7 * ncols, 2.7 * nrows + 1.3),
-        subplot_kw={"projection": ccrs.PlateCarree()},
-        squeeze=False,
-    )
-    fig.suptitle(f"SubX Weeks 3&4 {title_prefix}", fontsize=15, y=0.99)
-
-    mappable = None
-    for idx, model_id in enumerate(models):
-        row, col = divmod(idx, ncols)
-        ax = axes[row][col]
-        ax.set_extent([lon_bounds[0], lon_bounds[1], lat_bounds[0], lat_bounds[1]], crs=ccrs.PlateCarree())
-        ax.coastlines("110m", linewidth=0.8)
-        ax.add_feature(cfeature.BORDERS, linewidth=0.4)
-        ax.add_feature(cfeature.STATES, linewidth=0.2)
-
-        da = _prepare_domain_view(da_34.sel(model=model_id), lon_bounds, lat_bounds)
-        finite = np.isfinite(da.values)
-        if finite.any():
-            mappable = ax.contourf(
-                da["lon"],
-                da["lat"],
-                da,
-                levels=levels,
-                cmap=cmap,
-                norm=norm,
-                transform=ccrs.PlateCarree(),
-                extend="both",
-            )
         else:
-            ax.text(0.5, 0.5, "No data", transform=ax.transAxes, ha="center", va="center", fontsize=10)
-        ax.set_title(model_id, fontsize=10)
+            ax.text(0.5, 0.5, "Missing model", transform=ax.transAxes, ha="center", va="center", fontsize=10)
+        try:
+            ax.spines["geo"].set_linewidth(0.8)
+        except Exception:
+            pass
+        # Extract IC date and ensemble count for title.
+        ic_date = ds_subx.coords.get("init_date")
+        if model_id in available_set and ic_date is not None and "model" in ic_date.dims:
+            ic_raw = ic_date.sel(model=model_id).item()
+            ic_date_str = str(ic_raw)[:10]
+        else:
+            ic_date_str = "Unknown"
+        if model_id in available_set and "nens" in ds_subx.coords and "model" in ds_subx["nens"].dims:
+            nens_raw = ds_subx["nens"].sel(model=model_id).item()
+            try:
+                nens = int(nens_raw)
+            except (TypeError, ValueError):
+                nens = 0
+        else:
+            nens = 0
 
+        if model_id in available_set:
+            ax.set_title(f"{model_id} (IC: {ic_date_str}; {nens} Ens)", fontsize=10, pad=4)
+        else:
+            ax.set_title(f"{model_id} (IC: N/A; N/A Ens)", fontsize=10, pad=4)
     for idx in range(len(models), nrows * ncols):
         row, col = divmod(idx, ncols)
         axes[row][col].axis("off")
 
+    fig.subplots_adjust(top=0.90, bottom=0.16, left=0.04, right=0.98, wspace=0.07, hspace=0.30)
     if mappable is not None:
-        cbar = fig.colorbar(mappable, ax=axes, orientation="horizontal", fraction=0.05, pad=0.08)
-        cbar.set_label(units)
+        cax = fig.add_axes([0.18, 0.06, 0.64, 0.03])
+        cbar = fig.colorbar(mappable, cax=cax, orientation="horizontal")
+        cbar.set_label(units, fontsize=10)
 
-    out_png = os.path.join(out_images, f"{filename_prefix}{domain_name}Weeks3&4.png")
-    plt.tight_layout(rect=[0, 0.05, 1, 0.96])
-    fig.savefig(out_png, dpi=150, bbox_inches="tight")
+    out_png = os.path.join(out_images, f"{filename_prefix}{domain_name}Weeks34.png")
+    fig.savefig(out_png, dpi=150)
+    plt.close(fig)
+    print(f"[SAVE] {out_png}")
+
+
+def _plot_exceedance_region_panels(
+    out_images: str,
+    fcstdate: str,
+    region_name: str,
+    var: str,
+    panel_models: list[str],
+    model_probs: dict[str, xr.DataArray],
+    model_init_dates: dict[str, pd.Timestamp],
+    model_ensemble_counts: dict[str, int],
+    pct: int = 95,
+    week_num: int = 1,
+    week_start: pd.Timestamp | None = None,
+    week_end: pd.Timestamp | None = None,
+    global_projection: bool = False,
+    mme_member_count: int = 0,
+) -> None:
+    import math
+    import matplotlib.pyplot as plt
+    import matplotlib.colors as mcolors
+    import cartopy.crs as ccrs
+    import cartopy.feature as cfeature
+
+    if week_start is None or week_end is None:
+        wk_start = pd.Timestamp(fcstdate) + pd.Timedelta(days=(2 + (week_num - 1) * 7))
+        wk_end = wk_start + pd.Timedelta(days=6)
+    else:
+        wk_start = pd.Timestamp(week_start)
+        wk_end = pd.Timestamp(week_end)
+
+    valid_str = f"{wk_start.strftime('%b %d')} – {wk_end.strftime('%b %d, %Y')}"
+
+    if not panel_models:
+        return
+
+    ncols = 3
+    nrows = math.ceil(len(panel_models) / ncols)
+    projection = ccrs.Robinson() if global_projection else ccrs.PlateCarree()
+    fig, axes = plt.subplots(
+        nrows,
+        ncols,
+        figsize=(4.7 * ncols, 3.15 * nrows + 1.7),
+        subplot_kw={"projection": projection},
+        squeeze=False,
+    )
+    fig.suptitle(
+        f"Probability of Exceeding {pct}th Percentile Any Day During Week {week_num} ({valid_str})\n{var} - {region_name}",
+        fontsize=14,
+        y=0.985,
+    )
+
+    levels = np.arange(5, 95, 5)
+    cmap = plt.get_cmap("Reds", len(levels) - 1)
+    norm = mcolors.BoundaryNorm(levels, cmap.N)
+
+    extent = None
+    for probs in model_probs.values():
+        data = _select_week_window_from_probs(probs, wk_end, week_num, region_name)
+        if "lat" in data.dims and "lon" in data.dims and data.sizes.get("lat", 0) and data.sizes.get("lon", 0):
+            lon_vals = np.asarray(data["lon"].values, dtype=float)
+            lat_vals = np.asarray(data["lat"].values, dtype=float)
+            if lon_vals.size and lat_vals.size:
+                extent = [float(np.nanmin(lon_vals)), float(np.nanmax(lon_vals)), float(np.nanmin(lat_vals)), float(np.nanmax(lat_vals))]
+                break
+
+    mappable = None
+    for idx, model_id in enumerate(panel_models):
+        row, col = divmod(idx, ncols)
+        ax = axes[row][col]
+        if global_projection:
+            ax.set_global()
+        elif extent is not None:
+            ax.set_extent(extent, crs=ccrs.PlateCarree())
+        ax.coastlines("110m", linewidth=0.8)
+        ax.add_feature(cfeature.BORDERS, linewidth=0.4)
+        if not global_projection:
+            ax.add_feature(cfeature.STATES, linewidth=0.2)
+
+        probs = model_probs.get(model_id)
+        if probs is None:
+            ax.text(0.5, 0.5, "Missing model", transform=ax.transAxes, ha="center", va="center", fontsize=10)
+            ic_date_str = "N/A"
+            nens = "N/A"
+        else:
+            data = _select_week_window_from_probs(probs, wk_end, week_num, region_name)
+
+            if "lat" not in data.dims or "lon" not in data.dims:
+                ax.text(0.5, 0.5, "Non-map output", transform=ax.transAxes, ha="center", va="center", fontsize=10)
+            elif data.sizes.get("lat", 0) == 0 or data.sizes.get("lon", 0) == 0:
+                ax.text(0.5, 0.5, "No data", transform=ax.transAxes, ha="center", va="center", fontsize=10)
+            elif np.isfinite(data.values).any():
+                vals = np.asarray(data.values, dtype=float)
+                finite_vals = vals[np.isfinite(vals)]
+                if finite_vals.size:
+                    q10, q50, q90 = np.nanpercentile(finite_vals, [10, 50, 90])
+                    print(
+                        f"[EXCEED-DIAG] region={region_name} model={model_id} "
+                        f"min={np.nanmin(finite_vals):.1f} p10={q10:.1f} p50={q50:.1f} p90={q90:.1f} "
+                        f"max={np.nanmax(finite_vals):.1f} std={np.nanstd(finite_vals):.2f}"
+                    )
+                mappable = ax.contourf(
+                    data["lon"],
+                    data["lat"],
+                    data,
+                    levels=levels,
+                    cmap=cmap,
+                    norm=norm,
+                    transform=ccrs.PlateCarree(),
+                    extend="both",
+                )
+            else:
+                ax.text(0.5, 0.5, "No data", transform=ax.transAxes, ha="center", va="center", fontsize=10)
+
+            if model_id == "SUBC-MME":
+                ic_date_str = "Blend"
+                nens = int(mme_member_count)
+            else:
+                init_ts = model_init_dates.get(model_id)
+                ic_date_str = init_ts.strftime("%Y-%m-%d") if init_ts is not None else "Unknown"
+                nens = int(model_ensemble_counts.get(model_id, 0))
+
+        try:
+            ax.spines["geo"].set_linewidth(0.8)
+        except Exception:
+            pass
+        ax.set_title(f"{model_id} (IC: {ic_date_str}; {nens} Ens)", fontsize=10, pad=4)
+
+    for idx in range(len(panel_models), nrows * ncols):
+        row, col = divmod(idx, ncols)
+        axes[row][col].axis("off")
+
+    fig.subplots_adjust(top=0.90, bottom=0.16, left=0.04, right=0.98, wspace=0.07, hspace=0.30)
+    if mappable is not None:
+        cax = fig.add_axes([0.18, 0.06, 0.64, 0.03])
+        cbar = fig.colorbar(mappable, cax=cax, orientation="horizontal")
+        cbar.set_label("%", fontsize=10)
+
+    out_png = os.path.join(out_images, f"exceed_panel_{var}_{region_name}_{fcstdate}_wk{week_num}.png")
+    fig.savefig(out_png, dpi=150)
     plt.close(fig)
     print(f"[SAVE] {out_png}")
 
@@ -433,9 +787,12 @@ def main():
     os.makedirs(out_images, exist_ok=True)
     os.makedirs(out_data,   exist_ok=True)
     _remove_stale_legacy_products(out_images)
+    _remove_stale_exceedance_model_images(out_images, fcstdate)
 
     ds_anoms_by_model = []
     ds_full_by_model  = []
+    model_init_dates: dict[str, pd.Timestamp] = {}
+    model_ensemble_counts: dict[str, int] = {}
 
     for m in cfg["models"]:
         group = m["group"]
@@ -474,6 +831,10 @@ def main():
             print(f"  [INFO] Using init for {var}: {group}-{chosen_model_name} {chosen_init:%Y%m%d}")
 
             model_id_local = f"{group}-{chosen_model_name}"
+            prev_init = model_init_dates.get(model_id_local)
+            if prev_init is None or chosen_init > prev_init:
+                model_init_dates[model_id_local] = chosen_init
+            model_ensemble_counts[model_id_local] = max(model_ensemble_counts.get(model_id_local, 0), ds.sizes.get("M", 1))
 
             if "P" in ds[var].dims:
                 ds = ds.sel(P=int(plev))
@@ -540,8 +901,6 @@ def main():
             if "dayofyear" in anom.dims:
                 anom = anom.drop_dims("dayofyear")
             anom = anom.to_dataset(name=vout)
-            anom = anom.assign_coords(nens=ds.sizes.get('M', 1))
-
             var_dsets_anom.append(anom)
             var_dsets_full.append(ds)
 
@@ -580,12 +939,28 @@ def main():
         ds_mme = ds_week.mean('model').assign_coords(
             S=np.datetime64(pd.Timestamp(fcstdate), 'ns'),
             model='SUBC-MME',
-            nens=ds_week['nens'].sum(),
-            ic_dates=pd.to_datetime(fcstdate).strftime('%Y%m%d'),
         )
         ds_subx = xr.concat([ds_week, ds_mme], dim='model')
     else:
         ds_subx = ds_week
+
+    if 'model' in ds_subx.coords:
+        init_date_vals: list[str] = []
+        nens_vals: list[int] = []
+        mme_nens = int(sum(model_ensemble_counts.values())) if model_ensemble_counts else 0
+        for mid in ds_subx['model'].values:
+            model_name = str(mid)
+            if model_name == 'SUBC-MME':
+                init_date_vals.append(pd.to_datetime(fcstdate).strftime('%Y%m%d'))
+                nens_vals.append(mme_nens)
+            else:
+                init_ts = model_init_dates.get(model_name)
+                init_date_vals.append(init_ts.strftime('%Y%m%d') if init_ts is not None else 'Unknown')
+                nens_vals.append(int(model_ensemble_counts.get(model_name, 0)))
+        ds_subx = ds_subx.assign_coords(
+            init_date=('model', np.asarray(init_date_vals, dtype=object)),
+            nens=('model', np.asarray(nens_vals, dtype=np.int32)),
+        )
     
     # Clean up attributes
     for k in ("week_start", "week_end"):
@@ -602,6 +977,10 @@ def main():
     panel_models = [f"{m['group']}-{m['name']}" for m in cfg.get("models", [])]
     panel_models.append("SUBC-MME")
     _plot_legacy_weekly_products(ds_subx, out_images, fcstdate, panel_models)
+    panel_order = [
+        m for m in _resolve_panel_models([str(m) for m in ds_subx["model"].values], panel_models)
+        if m != "SUBC-MME"
+    ]
 
     # ---- Exceedance for all available models ----
     if ds_full_by_model:
@@ -618,6 +997,28 @@ def main():
             mmdd = pd.Timestamp(fcstdate).strftime('%m%d')
             processed_models = []
             available_models = [str(m) for m in ds_full['model'].values if str(m) != 'SUBC-MME']
+            exceedance_region_maps: dict[str, dict[str, xr.DataArray]] = {
+                r['name']: {} for r in cfg.get('regions', [])
+            }
+            mme_counts_by_region: dict[str, xr.DataArray] = {}
+            mme_members_by_region: dict[str, int] = {}
+            print(
+                "[INFO] Exceedance threshold lookup convention: "
+                f"<hc_root>/{var}{lev}/daily/percentiles/{{model}}-{{group}}/{var}_{{model}}-{{group}}/"
+                f"{var}_{{group}}-{{model}}-MMDD.{pct}p.nc"
+            )
+
+            # Reverse map: local model_id -> server/configured model name
+            # Needed when model_name_map renames a model (e.g. GEOS_V2p1_5daily -> GEOS_V2p1)
+            # but threshold files use the original configured name.
+            server_name_by_local: dict[str, str] = {}
+            for m_cfg in cfg.get("models", []):
+                g, srv = m_cfg["group"], m_cfg["name"]
+                srv_key = f"{g}-{srv}"
+                local_name = model_map.get(srv_key, model_map.get(srv, srv))
+                local_key = f"{g}-{local_name}"
+                if local_key != srv_key:
+                    server_name_by_local[local_key] = srv
 
             for mid in available_models:
                 if '-' not in mid:
@@ -625,28 +1026,38 @@ def main():
                     continue
 
                 group, model = mid.split('-', 1)
-                # New threshold layout:
-                # <hc_root>/{var}{lev}/daily/percentiles/{model}-{group}/{var}_{model}-{group}/{var}_{group}-{model}_{mmdd}.95p.nc
-                thr_dir = os.path.join(
-                    hc_root,
-                    f"{var}{lev}",
-                    "daily",
-                    "percentiles",
-                    f"{model}-{group}",
-                    f"{var}_{model}-{group}",
-                )
+                # Also try the original server/configured model name if it was remapped
+                model_candidates_thr = _unique([model, server_name_by_local.get(mid, model)])
 
-                thr_path = nearest_mmdd_threshold(
-                    thr_dir,
-                    var,
-                    group,
-                    model,
-                    mmdd,
-                    pct,
-                    max_offset_days=max_fallback_days,
-                )
+                thr_path = None
+                thr_dir = None
+                for model_thr in model_candidates_thr:
+                    candidate_dir = os.path.join(
+                        hc_root,
+                        f"{var}{lev}",
+                        "daily",
+                        "percentiles",
+                        f"{model_thr}-{group}",
+                        f"{var}_{model_thr}-{group}",
+                    )
+                    if os.path.isdir(candidate_dir):
+                        found = nearest_mmdd_threshold(
+                            candidate_dir,
+                            var,
+                            group,
+                            model_thr,
+                            mmdd,
+                            pct,
+                            max_offset_days=max_fallback_days,
+                        )
+                        if found:
+                            thr_path = found
+                            thr_dir = candidate_dir
+                            break
+                    thr_dir = candidate_dir  # keep last tried for warning message
+
                 if not thr_path:
-                    candidate_pattern = os.path.join(thr_dir, f"{var}_{group}-{model}_*.{pct}p.nc")
+                    candidate_pattern = os.path.join(thr_dir, f"{var}_{group}-{model_candidates_thr[-1]}_*.{pct}p.nc")
                     has_candidates = bool(glob.glob(candidate_pattern))
                     if has_candidates:
                         print(f"[WARN] No threshold within +/-{max_fallback_days} days for {mid}; skipping model.")
@@ -664,8 +1075,8 @@ def main():
                     lon_slice = tuple(bounds.get('lon', [])) if 'lon' in bounds else None
                     lat_slice = tuple(bounds.get('lat', [])) if 'lat' in bounds else None
 
-                    field = ds_full[var].sel(model=mid).mean('M')
-                    probs = compute_exceedance(
+                    field = ds_full[var].sel(model=mid)
+                    counts = compute_exceedance(
                         field,
                         threshold_path=thr_path,
                         init_date=pd.Timestamp(fcstdate),
@@ -674,23 +1085,88 @@ def main():
                         var=var,
                         lon_slice=lon_slice,
                         lat_slice=lat_slice,
+                        return_counts=True,
                     )
+                    ens_dim = 'M' if 'M' in field.dims else ('member' if 'member' in field.dims else None)
+                    model_nens = int(field.sizes.get(ens_dim, 0)) if ens_dim else 1
+                    probs = (counts / float(model_nens)) * 100.0
+                    probs.name = f"{var}_exceed_prob"
+
+                    if region_name in mme_counts_by_region:
+                        prev_counts, new_counts = xr.align(mme_counts_by_region[region_name], counts, join='inner')
+                        mme_counts_by_region[region_name] = (prev_counts + new_counts)
+                        mme_members_by_region[region_name] += model_nens
+                    else:
+                        mme_counts_by_region[region_name] = counts
+                        mme_members_by_region[region_name] = model_nens
 
                     out_file = os.path.join(out_data, f"exceed_{mid}_{var}_{region_name}_{fcstdate}.nc")
                     probs.to_netcdf(out_file)
 
-                    out_png = os.path.join(out_images, f"exceed_{mid}_{var}_{region_name}_{fcstdate}.png")
-                    title = f"Exceedance Prob (avg windows) – {mid} {var} – {region_name} – {fcstdate}"
-                    plotted = plot_exceedance_summary(probs, title, out_png)
-                    if plotted:
-                        print(f"[SAVE] {out_png}")
+                    # Compute valid date range from time_window coord for title
+                    if probs.sizes.get('time_window', 0) > 0 and np.issubdtype(probs['time_window'].dtype, np.datetime64):
+                        tw = probs['time_window'].values
+                        valid_start = pd.Timestamp(tw[0]).strftime('%b %d')
+                        valid_end = pd.Timestamp(tw[-1]).strftime('%b %d, %Y')
+                        valid_str = f"{valid_start} – {valid_end}"
                     else:
-                        print(f"[WARN] Skipped exceedance plot for {mid} {region_name} (non-plottable output).")
+                        valid_str = "avg windows"
+
+                    exceedance_region_maps.setdefault(region_name, {})[mid] = probs
 
                 processed_models.append(mid)
 
             if not processed_models:
                 print("[WARN] Exceedance skipped (no model-specific threshold files found).")
+            else:
+                for region_name, per_model_probs in exceedance_region_maps.items():
+                    mme_counts = mme_counts_by_region.get(region_name)
+                    mme_nens = int(mme_members_by_region.get(region_name, 0))
+                    if mme_counts is not None and mme_nens > 0:
+                        mme_probs = (mme_counts / float(mme_nens)) * 100.0
+                        mme_probs.name = f"{var}_exceed_prob"
+                        per_model_probs["SUBC-MME"] = mme_probs
+
+                    panel_models_with_mme = list(panel_order)
+                    if "SUBC-MME" not in panel_models_with_mme:
+                        panel_models_with_mme.append("SUBC-MME")
+
+                    week0 = pd.Timestamp(fcstdate) + pd.Timedelta(days=2)  # Saturday
+                    for week_num in [1, 2, 3, 4]:
+                        wk_start = week0 + pd.Timedelta(days=(week_num - 1) * 7)
+                        wk_end = wk_start + pd.Timedelta(days=6)
+
+                        for model_id, probs_all_windows in per_model_probs.items():
+                            probs_week = _select_week_window_from_probs(
+                                probs_all_windows,
+                                wk_end,
+                                week_num,
+                                region_name,
+                            )
+                            if "time_window" in probs_week.coords and "time_window" not in probs_week.dims:
+                                probs_week = probs_week.drop_vars("time_window", errors="ignore")
+                            out_week_file = os.path.join(
+                                out_data,
+                                f"exceed_{model_id}_{var}_{region_name}_{fcstdate}_wk{week_num}.nc",
+                            )
+                            probs_week.to_netcdf(out_week_file)
+
+                        _plot_exceedance_region_panels(
+                            out_images=out_images,
+                            fcstdate=fcstdate,
+                            region_name=region_name,
+                            var=var,
+                            panel_models=panel_models_with_mme,
+                            model_probs=per_model_probs,
+                            model_init_dates=model_init_dates,
+                            model_ensemble_counts=model_ensemble_counts,
+                            pct=pct,
+                            week_num=week_num,
+                            week_start=wk_start,
+                            week_end=wk_end,
+                            global_projection=(region_name == "Global"),
+                            mme_member_count=mme_nens,
+                        )
         else:
             print(f"[WARN] Exceedance skipped (variable '{var}' not present in model dataset).")
 
