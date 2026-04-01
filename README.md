@@ -17,7 +17,7 @@ The environment spec in [environment.yml](environment.yml) is based on the worki
 python3 runners/cli.py --system subx --config config.yaml --init YYYYMMDD
 ```
 
-- Stages: `ingest`, `products`, `pycpt`.
+- Stages: `ingest`, `products`, `pycpt`, `arraylake`, `publish`.
 - Canonical entrypoint: [runners/cli.py](runners/cli.py)
 - Legacy shell entry: [subx_pipeline.sh](subx_pipeline.sh) delegates to the runner.
 

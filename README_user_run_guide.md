@@ -46,7 +46,7 @@ Preferred command:
 python3 runners/cli.py --system subx --config config.yaml --init 20260305
 ```
 
-This runs the full end-to-end pipeline: `ingest`, `products`, and `pycpt`.
+This runs the default end-to-end pipeline stages: `ingest`, `products`, `pycpt`, `arraylake`, and `publish`.
 
 Legacy wrapper:
 
@@ -64,6 +64,12 @@ Run only the products stage:
 
 ```bash
 python3 runners/cli.py --system subx --config config.yaml --init 20260305 --stages products
+```
+
+Run Arraylake append stage (after products):
+
+```bash
+python3 runners/cli.py --system subx --config config.yaml --init 20260305 --stages products arraylake
 ```
 
 Dry-run the products stage:
@@ -118,6 +124,13 @@ python3 runners/cli.py --system subx --config config.yaml --init 20260305 --stag
 - Builds PyCPT-compatible regional inputs.
 - Supports local staged data and local SubX archive predictor generation.
 - Can operate on configured model groups or CLI-selected models.
+
+### `arraylake`
+
+- Appends new realtime start dates into existing Arraylake groups.
+- Script entrypoint: [run_addvars_rt.sh](run_addvars_rt.sh) -> [addvars_rt.py](addvars_rt.py).
+- Only runs when `arraylake.enabled: true` in [config.yaml](config.yaml).
+- Uses `ARRAYLAKE_TOKEN` environment variable if provided; otherwise uses the default client auth flow.
 
 ---
 

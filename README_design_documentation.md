@@ -14,6 +14,10 @@ Validation
 Weekly Products and Exceedance
    ↓
 Regional PyCPT Post-Processing
+   ↓
+Arraylake Append (Optional)
+   ↓
+Publish
 ```
 
 Primary entrypoint:
@@ -112,6 +116,26 @@ Supported modes:
 - Regional parallel execution
 
 Model selection precedence is explicit and shared between configuration and CLI.
+
+---
+
+## Arraylake Design
+
+Arraylake append execution is orchestrated through the runner stage `arraylake` and implemented by [run_addvars_rt.sh](run_addvars_rt.sh) and [addvars_rt.py](addvars_rt.py).
+
+Design intent:
+
+- Keep Arraylake integration optional and configuration-driven via `arraylake.enabled` in [config.yaml](config.yaml).
+- Use workflow model configuration as the source of truth for group/model iteration.
+- Append only new start dates (`S`) to existing repository groups.
+- Avoid hard failures for missing model-variable files by skipping unavailable inputs.
+- Prefer runtime authentication through `ARRAYLAKE_TOKEN` over hard-coded credentials.
+
+---
+
+## Publish Design
+
+The `publish` stage is responsible for syncing final workflow outputs for downstream web and stakeholder access.
 
 ---
 

@@ -41,8 +41,8 @@ def main():
     ap.add_argument("--config", required=True, help="YAML config file")
     ap.add_argument("--init", default=None, help="Init date: SubX=YYYYMMDD, NMME=YYYYMM or YYYYMMDD")
     ap.add_argument("--system", required=True, help="subx|nmme")
-    ap.add_argument("--stages", nargs="*", default=["ingest","products","pycpt","publish"],
-                    help="Stages to run in order: ingest products pycpt publish")
+    ap.add_argument("--stages", nargs="*", default=["ingest","products","pycpt","arraylake","publish"],
+                    help="Stages to run in order: ingest products pycpt arraylake publish")
     ap.add_argument("--publish-subdir", default=None,
                     help="SubX only: optional destination subdir under date, e.g., test")
     ap.add_argument("--products-dry-run", action="store_true",
@@ -73,6 +73,7 @@ def main():
             "ingest":   [str(ROOT_DIR / "update_subx_fcsts.sh"), init, config_path],
             "products": [str(ROOT_DIR / "make_fcsts.sh"), init, config_path],
             "pycpt":    [str(ROOT_DIR / "pycpt_run.sh"), init, config_path],
+            "arraylake": [str(ROOT_DIR / "run_addvars_rt.sh"), init, config_path],
             "publish":  [str(ROOT_DIR / "publish_subx_web.sh"), init, config_path],
         }
         stage_envs = {
@@ -89,6 +90,7 @@ def main():
             "publish": {
                 "SUBX_PUBLISH_SUBDIR": args.publish_subdir,
             },
+            "arraylake": {},
         }
     elif system == "nmme":
         # products expects YYYYMM; normalize if init like YYYYMMDD
