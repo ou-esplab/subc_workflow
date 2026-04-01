@@ -15,4 +15,5 @@ logs/
 # Optional local env files
 .env
 .venv/
+.venv_py310/
 venv/

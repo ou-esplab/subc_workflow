@@ -29,6 +29,9 @@ exceedance:
   window_days: 7
   modelkey: GEFSthres
 regions:
+  - name: Global
+    subx:  { lon: [0, 360], lat: [-60, 80] }
+    pycpt: { lon: [-180, 180], lat: [-60, 80] }
   - name: Venezuela
     subx:  { lon: [287, 300], lat: [0, 13] }
     pycpt: { lon: [-60, -73], lat: [0, 13] }
