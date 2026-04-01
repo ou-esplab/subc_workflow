@@ -41,8 +41,10 @@ def main():
     ap.add_argument("--config", required=True, help="YAML config file")
     ap.add_argument("--init", default=None, help="Init date: SubX=YYYYMMDD, NMME=YYYYMM or YYYYMMDD")
     ap.add_argument("--system", required=True, help="subx|nmme")
-    ap.add_argument("--stages", nargs="*", default=["ingest","products","pycpt"],
-                    help="Stages to run in order: ingest products pycpt")
+    ap.add_argument("--stages", nargs="*", default=["ingest","products","pycpt","publish"],
+                    help="Stages to run in order: ingest products pycpt publish")
+    ap.add_argument("--publish-subdir", default=None,
+                    help="SubX only: optional destination subdir under date, e.g., test")
     ap.add_argument("--products-dry-run", action="store_true",
                     help="SubX only: run products stage in smoke/dry-run mode")
     ap.add_argument("--pycpt-only", nargs="+", default=None,
@@ -71,6 +73,7 @@ def main():
             "ingest":   [str(ROOT_DIR / "update_subx_fcsts.sh"), init, config_path],
             "products": [str(ROOT_DIR / "make_fcsts.sh"), init, config_path],
             "pycpt":    [str(ROOT_DIR / "pycpt_run.sh"), init, config_path],
+            "publish":  [str(ROOT_DIR / "publish_subx_web.sh"), init, config_path],
         }
         stage_envs = {
             "ingest": {},
@@ -82,6 +85,9 @@ def main():
                 "PYCPT_MAX_WORKERS": args.pycpt_max_workers,
                 "PYCPT_MODELS": ",".join(args.pycpt_models) if args.pycpt_models else None,
                 "PYCPT_SMOKE_MODE": "1" if args.pycpt_dry_run else None,
+            },
+            "publish": {
+                "SUBX_PUBLISH_SUBDIR": args.publish_subdir,
             },
         }
     elif system == "nmme":

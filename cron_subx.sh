@@ -19,7 +19,7 @@ cd "$SCRIPT_DIR"
 
 # ---- Configuration ----------------------------------------------------------
 CONFIG="${SUBX_CONFIG:-$SCRIPT_DIR/config.yaml}"
-STAGES="${SUBX_STAGES:-ingest products pycpt}"
+STAGES="${SUBX_STAGES:-ingest products pycpt publish}"
 CONDA_BASE="${CONDA_BASE:-$HOME/miniconda3}"
 ENV_NAME="${ENV_NAME:-subc_workflow_env}"
 LOCK_FILE="/tmp/subx_cron.lock"
