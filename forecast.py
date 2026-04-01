@@ -251,12 +251,20 @@ def _write_region_weekly_data(
         out_ds.to_netcdf(out_file)
         print(f"[SAVE] {out_file}")
 
-    da_34 = _prepare_domain_view(ds_subx[var_name].sel(week=[3, 4]).mean("week"), lon_bounds, lat_bounds)
+    week34_aggregate = "sum" if var_name.startswith("pr") else "mean"
+    if week34_aggregate == "sum":
+        da_34 = _prepare_domain_view(ds_subx[var_name].sel(week=[3, 4]).sum("week"), lon_bounds, lat_bounds)
+        week34_units = units.replace("mm/week", "mm/2-weeks")
+    else:
+        da_34 = _prepare_domain_view(ds_subx[var_name].sel(week=[3, 4]).mean("week"), lon_bounds, lat_bounds)
+        week34_units = units
+
     out_ds = da_34.to_dataset(name=var_name)
     out_ds.attrs["fcstdate"] = fcstdate
     out_ds.attrs["domain_name"] = domain_name
-    out_ds.attrs["units"] = units
+    out_ds.attrs["units"] = week34_units
     out_ds.attrs["week"] = "3-4"
+    out_ds.attrs["aggregation"] = week34_aggregate
 
     out_file = os.path.join(out_data, f"{filename_prefix}{domain_name}Weeks34.nc")
     out_ds.to_netcdf(out_file)
@@ -436,13 +444,15 @@ def _plot_weekly_panels(
     # Precipitation uses brown (negative) to green (positive),
     # while temperature/heights use blue (negative) to red (positive).
     if "pr" in var_name:
-        cmap = plt.get_cmap("BrBG", len(levels) - 1)
+        cmap = plt.get_cmap("BrBG")
     elif "hgt" in var_name or "psl" in var_name:
-        cmap = plt.get_cmap("RdBu_r", len(levels) - 1)
+        cmap = plt.get_cmap("RdBu_r")
     else:
-        cmap = plt.get_cmap("RdBu_r", len(levels) - 1)
+        cmap = plt.get_cmap("RdBu_r")
     
-    norm = mcolors.BoundaryNorm(levels, cmap.N)
+    # Center colorbar around zero for anomalies using TwoSlopeNorm
+    vmin, vmax = levels.min(), levels.max()
+    norm = mcolors.TwoSlopeNorm(vmin=vmin, vcenter=0, vmax=vmax)
 
     is_polar_geopotential = ("hgt" in var_name) or ("zg" in var_name)
     is_north_america = domain_name == "NorthAmerica"
@@ -542,7 +552,13 @@ def _plot_weekly_panels(
         fig.subplots_adjust(top=0.90, bottom=0.16, left=0.04, right=0.98, wspace=0.07, hspace=0.30)
         if mappable is not None:
             cax = fig.add_axes([0.18, 0.06, 0.64, 0.03])
-            cbar = fig.colorbar(mappable, cax=cax, orientation="horizontal")
+            cbar = fig.colorbar(
+                mappable,
+                cax=cax,
+                orientation="horizontal",
+                ticks=levels,
+            )
+            cbar.ax.tick_params(labelsize=8)
             cbar.set_label(units, fontsize=10)
 
         out_png = os.path.join(out_images, f"{filename_prefix}{domain_name}Week{week}.png")
@@ -550,7 +566,16 @@ def _plot_weekly_panels(
         plt.close(fig)
         print(f"[SAVE] {out_png}")
 
-    da_34 = ds_subx[var_name].sel(week=[3, 4]).mean("week")
+    week34_is_total = var_name.startswith("pr")
+    if week34_is_total:
+        da_34 = ds_subx[var_name].sel(week=[3, 4]).sum("week")
+        week34_title_prefix = title_prefix.replace("mm/week", "mm/2-weeks")
+        week34_units = units.replace("mm/week", "mm/2-weeks")
+    else:
+        da_34 = ds_subx[var_name].sel(week=[3, 4]).mean("week")
+        week34_title_prefix = title_prefix
+        week34_units = units
+
     fig, axes = plt.subplots(
         nrows,
         ncols,
@@ -560,7 +585,7 @@ def _plot_weekly_panels(
     )
     valid_34_end = pd.Timestamp(fcstdate) + pd.Timedelta(days=29)
     fig.suptitle(
-        f"SubX Week 3-4 {title_prefix}: Valid 2 weeks ending {valid_34_end:%b %d, %Y}",
+        f"SubX Week 3-4 {week34_title_prefix}: {'2-week total' if week34_is_total else '2-week mean'} ending {valid_34_end:%b %d, %Y}",
         fontsize=14,
         y=0.985,
     )
@@ -634,8 +659,14 @@ def _plot_weekly_panels(
     fig.subplots_adjust(top=0.90, bottom=0.16, left=0.04, right=0.98, wspace=0.07, hspace=0.30)
     if mappable is not None:
         cax = fig.add_axes([0.18, 0.06, 0.64, 0.03])
-        cbar = fig.colorbar(mappable, cax=cax, orientation="horizontal")
-        cbar.set_label(units, fontsize=10)
+        cbar = fig.colorbar(
+            mappable,
+            cax=cax,
+            orientation="horizontal",
+            ticks=levels,
+        )
+        cbar.ax.tick_params(labelsize=8)
+        cbar.set_label(week34_units, fontsize=10)
 
     out_png = os.path.join(out_images, f"{filename_prefix}{domain_name}Weeks34.png")
     fig.savefig(out_png, dpi=150)
