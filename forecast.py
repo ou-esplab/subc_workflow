@@ -224,6 +224,45 @@ def _prepare_domain_view(da: xr.DataArray, lon_bounds: tuple[float, float], lat_
     return da_plot.sel(lon=lon_sel, lat=lat_sel)
 
 
+def _write_region_weekly_data(
+    ds_subx: xr.Dataset,
+    var_name: str,
+    out_data: str,
+    fcstdate: str,
+    units: str,
+    filename_prefix: str,
+    domain_name: str,
+    lon_bounds: tuple[float, float],
+    lat_bounds: tuple[float, float],
+) -> None:
+    if var_name not in ds_subx:
+        print(f"[WARN] Skipping {filename_prefix} regional data ({var_name} not present).")
+        return
+
+    for week in [1, 2, 3, 4]:
+        da = _prepare_domain_view(ds_subx[var_name].sel(week=week), lon_bounds, lat_bounds)
+        out_ds = da.to_dataset(name=var_name)
+        out_ds.attrs["fcstdate"] = fcstdate
+        out_ds.attrs["domain_name"] = domain_name
+        out_ds.attrs["units"] = units
+        out_ds.attrs["week"] = week
+
+        out_file = os.path.join(out_data, f"{filename_prefix}{domain_name}Week{week}.nc")
+        out_ds.to_netcdf(out_file)
+        print(f"[SAVE] {out_file}")
+
+    da_34 = _prepare_domain_view(ds_subx[var_name].sel(week=[3, 4]).mean("week"), lon_bounds, lat_bounds)
+    out_ds = da_34.to_dataset(name=var_name)
+    out_ds.attrs["fcstdate"] = fcstdate
+    out_ds.attrs["domain_name"] = domain_name
+    out_ds.attrs["units"] = units
+    out_ds.attrs["week"] = "3-4"
+
+    out_file = os.path.join(out_data, f"{filename_prefix}{domain_name}Weeks34.nc")
+    out_ds.to_netcdf(out_file)
+    print(f"[SAVE] {out_file}")
+
+
 def _unique(items: list[str]) -> list[str]:
     out: list[str] = []
     for item in items:
@@ -746,21 +785,45 @@ def _plot_exceedance_region_panels(
     print(f"[SAVE] {out_png}")
 
 
-def _plot_legacy_weekly_products(ds_subx: xr.Dataset, out_images: str, fcstdate: str, panel_models: list[str]) -> None:
-    _plot_weekly_panels(
-        ds_subx,
-        var_name="tas",
-        out_images=out_images,
-        fcstdate=fcstdate,
-        title_prefix="2m Temperature Anomalies (C)",
-        units="C",
-        filename_prefix="2mTemp",
-        domain_name="NorthAmerica",
-        lon_bounds=(-170, -30),
-        lat_bounds=(10, 80),
-        levels=np.array([-4, -3, -2.5, -2, -1.5, -1, -0.2, 0.2, 0.5, 1, 1.5, 2, 2.5, 3, 4]),
-        panel_models=panel_models,
-    )
+def _plot_legacy_weekly_products(
+    ds_subx: xr.Dataset,
+    out_images: str,
+    out_data: str,
+    fcstdate: str,
+    panel_models: list[str],
+) -> None:
+    tas_domains = [
+        ("NorthAmerica", (-170, -30), (10, 80)),
+        ("Iran", (40, 64), (24, 40)),
+        ("Mexico", (-118, -97), (20, 33)),
+        ("Venezuela", (-73, -60), (0, 13)),
+    ]
+    for domain_name, lon_bounds, lat_bounds in tas_domains:
+        _plot_weekly_panels(
+            ds_subx,
+            var_name="tas",
+            out_images=out_images,
+            fcstdate=fcstdate,
+            title_prefix="2m Temperature Anomalies (C)",
+            units="C",
+            filename_prefix="2mTemp",
+            domain_name=domain_name,
+            lon_bounds=lon_bounds,
+            lat_bounds=lat_bounds,
+            levels=np.array([-4, -3, -2.5, -2, -1.5, -1, -0.2, 0.2, 0.5, 1, 1.5, 2, 2.5, 3, 4]),
+            panel_models=panel_models,
+        )
+        _write_region_weekly_data(
+            ds_subx,
+            var_name="tas",
+            out_data=out_data,
+            fcstdate=fcstdate,
+            units="C",
+            filename_prefix="2mTemp",
+            domain_name=domain_name,
+            lon_bounds=lon_bounds,
+            lat_bounds=lat_bounds,
+        )
 
     _plot_weekly_panels(
         ds_subx,
@@ -1084,7 +1147,7 @@ def main():
 
     panel_models = [f"{m['group']}-{m['name']}" for m in cfg.get("models", [])]
     panel_models.append("SUBC-MME")
-    _plot_legacy_weekly_products(ds_subx, out_images, fcstdate, panel_models)
+    _plot_legacy_weekly_products(ds_subx, out_images, out_data, fcstdate, panel_models)
     panel_order = [
         m for m in _resolve_panel_models([str(m) for m in ds_subx["model"].values], panel_models)
         if m != "SUBC-MME"
