@@ -129,6 +129,83 @@ def _remove_stale_legacy_products(out_images: str) -> None:
     if removed:
         print(f"[INFO] Removed {removed} stale legacy product image(s).")
 
+def _write_backward_compat_pr_anom_files(ds_save: xr.Dataset, out_data: str, fcstdate: str) -> None:
+    """
+    Write legacy-compatible precipitation anomaly files:
+      - fcst_<date>.anom.pr_sfc.emin.nc
+      - fcst_<date>.anom.pr_sfc.emean.nc
+      - fcst_<date>.anom.pr_sfc.emax.nc
+
+    Values are computed across ensemble-member dimension `M` from `pr_members`.
+    """
+    if "pr_members" not in ds_save:
+        print("[WARN] Backward-compat postprocess skipped: variable 'pr_members' not found.")
+        return
+
+    src = ds_save["pr_members"]
+    if "M" not in src.dims:
+        print("[WARN] Backward-compat postprocess skipped: 'pr_members' has no 'M' dimension.")
+        return
+
+    stats = {
+        "emin": src.min("M", skipna=True),
+        "emean": src.mean("M", skipna=True),
+        "emax": src.max("M", skipna=True),
+    }
+
+    def _legacy_model_var_name(model_id: str) -> str:
+        if model_id == "SUBC-MME":
+            return "MME"
+        if "-" in model_id:
+            return model_id.split("-", 1)[1]
+        return model_id
+
+    for stat_name, da in stats.items():
+        # Build legacy layout: one variable per model on (time, lat, lon)
+        # rather than a single variable with model dimension.
+        da = da.rename({"week": "time"}) if "week" in da.dims else da
+        if "time" in da.coords and np.issubdtype(da["time"].dtype, np.integer):
+            start = pd.Timestamp(fcstdate) + pd.Timedelta(days=2)
+            week_ends = [start + pd.Timedelta(days=6 + 7 * i) for i in range(int(da.sizes.get("time", 0)))]
+            da = da.assign_coords(time=np.asarray(week_ends, dtype="datetime64[ns]"))
+
+        out_ds = xr.Dataset()
+        if "lon" in da.coords:
+            out_ds = out_ds.assign_coords(lon=da["lon"]) 
+            out_ds["lon"].attrs["units"] = "degrees_east"
+        if "lat" in da.coords:
+            out_ds = out_ds.assign_coords(lat=da["lat"])
+            out_ds["lat"].attrs["units"] = "degrees_north"
+        if "time" in da.coords:
+            out_ds = out_ds.assign_coords(time=da["time"])
+            out_ds["time"].attrs["standard_name"] = "time"
+            out_ds["time"].attrs["long_name"] = "Time of measurements"
+
+        if "model" in da.dims:
+            for model_id in da["model"].values:
+                model_name = str(model_id)
+                legacy_var = _legacy_model_var_name(model_name)
+                model_slice = da.sel(model=model_id).astype("float64")
+                model_slice = model_slice.transpose("time", "lat", "lon")
+                out_ds[legacy_var] = model_slice
+                out_ds[legacy_var].attrs["long_name"] = f"{model_name} {fcstdate}"
+                out_ds[legacy_var].attrs["units"] = "mmday-1"
+        else:
+            out_ds["MME"] = da.astype("float64").transpose("time", "lat", "lon")
+            out_ds["MME"].attrs["long_name"] = f"SUBC-MME {fcstdate}"
+            out_ds["MME"].attrs["units"] = "mmday-1"
+
+        out_ds.attrs["units"] = "mmday-1"
+        out_ds.attrs["source_file"] = f"subx_mme_anoms_wk_1-4_{fcstdate}.nc"
+        out_ds.attrs["description"] = (
+            "Backward-compatible SubX precipitation anomaly product "
+            f"({stat_name}) derived from pr_members across ensemble dimension M"
+        )
+
+        out_file = os.path.join(out_data, f"fcst_{fcstdate}.anom.pr_sfc.{stat_name}.nc")
+        out_ds.to_netcdf(out_file)
+        print(f"[SAVE] {out_file}")
+
 
 def _prepare_domain_view(da: xr.DataArray, lon_bounds: tuple[float, float], lat_bounds: tuple[float, float]) -> xr.DataArray:
     da_plot = da.assign_coords(lon=xr.where(da["lon"] > 180, da["lon"] - 360, da["lon"])).sortby("lon")
@@ -790,6 +867,7 @@ def main():
     _remove_stale_exceedance_model_images(out_images, fcstdate)
 
     ds_anoms_by_model = []
+    ds_member_anoms_by_model = []
     ds_full_by_model  = []
     model_init_dates: dict[str, pd.Timestamp] = {}
     model_ensemble_counts: dict[str, int] = {}
@@ -807,6 +885,7 @@ def main():
         print(f"[MODEL] server={group}-{server_model}  local={model_id_local}")
 
         var_dsets_anom = []
+        var_dsets_member_anom = []
         var_dsets_full = []
 
         for var, plev in zip(varlist, levlist):
@@ -851,6 +930,8 @@ def main():
             ds["lon"].attrs["units"] = "degrees_east"
             ds["lat"].attrs["units"] = "degrees_north"
             ds = ensure_lon(ds, lon_conv).assign_coords(model=model_id_local)   # <-- local id
+            if "M" in ds.dims and "M" not in ds.coords:
+                ds = ds.assign_coords(M=np.arange(1, int(ds.sizes["M"]) + 1, dtype=np.int32))
 
             # ---- Climatology from precomputed files ----
             mmdd_last   = pd.to_datetime(week_dates[-1]).strftime("%m%d")
@@ -881,6 +962,11 @@ def main():
             if vout != var:
                 ds = ds.rename({var: vout})
 
+            member_anom = ds[vout] - clim[var]
+            if "dayofyear" in member_anom.dims:
+                member_anom = member_anom.drop_dims("dayofyear")
+            var_dsets_member_anom.append(member_anom.to_dataset(name=f"{vout}_members"))
+
             em = ds.mean("M").squeeze()
             if var == "tas":
                 tas_field = em[vout]
@@ -908,6 +994,10 @@ def main():
             ds_model_anom = xr.merge(var_dsets_anom, compat="override").assign_coords(model=model_id_local)
             print(f"  [DBG] {model_id_local} anomaly vars: {list(ds_model_anom.data_vars)}")
             ds_anoms_by_model.append(ds_model_anom)
+        if var_dsets_member_anom:
+            ds_model_member_anom = xr.merge(var_dsets_member_anom, compat="override").assign_coords(model=model_id_local)
+            print(f"  [DBG] {model_id_local} member anomaly vars: {list(ds_model_member_anom.data_vars)}")
+            ds_member_anoms_by_model.append(ds_model_member_anom)
         if var_dsets_full:
             ds_full_by_model.append(xr.merge(var_dsets_full, compat="override").assign_coords(model=model_id_local))
 
@@ -934,6 +1024,13 @@ def main():
     print("[DBG] ds_models dims:", dict(ds_models.sizes))
     print("[DBG] ds_models vars:", list(ds_models.data_vars))
     ds_week   = weekly_reduce(ds_models, fcstdate, nweeks=4)
+
+    ds_week_members = None
+    if ds_member_anoms_by_model:
+        ds_models_members = safe_concat(ds_member_anoms_by_model, dim='model')
+        print("[DBG] ds_models_members dims:", dict(ds_models_members.sizes))
+        print("[DBG] ds_models_members vars:", list(ds_models_members.data_vars))
+        ds_week_members = weekly_reduce(ds_models_members, fcstdate, nweeks=4)
     
     if int(ds_week.sizes.get('model', 0)) > 1:
         ds_mme = ds_week.mean('model').assign_coords(
@@ -971,8 +1068,19 @@ def main():
     # ---- Save weekly NetCDF ----
     if args.save:
         nc_out = os.path.join(out_data, f"subx_mme_anoms_wk_1-4_{fcstdate}.nc")
-        ds_subx.to_netcdf(nc_out)
+        ds_save = ds_subx
+        if ds_week_members is not None and ds_week_members.data_vars:
+            ds_save = xr.merge([ds_subx, ds_week_members], compat="override")
+
+        mean_vars = sorted([str(v) for v in ds_subx.data_vars])
+        member_vars = sorted([str(v) for v in ds_save.data_vars if str(v).endswith("_members")])
+        ds_save.attrs["anomaly_mean_variables"] = ",".join(mean_vars)
+        ds_save.attrs["anomaly_member_variables"] = ",".join(member_vars)
+        ds_save.attrs["anomaly_member_suffix"] = "_members"
+
+        ds_save.to_netcdf(nc_out)
         print(f"[SAVE] {nc_out}")
+        _write_backward_compat_pr_anom_files(ds_save, out_data, fcstdate)
 
     panel_models = [f"{m['group']}-{m['name']}" for m in cfg.get("models", [])]
     panel_models.append("SUBC-MME")
