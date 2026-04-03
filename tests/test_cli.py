@@ -34,6 +34,8 @@ class CliWorkflowTests(unittest.TestCase):
                 "update_subx_fcsts.sh",
                 "make_fcsts.sh",
                 "pycpt_run.sh",
+                "run_addvars_rt.sh",
+                "publish_subx_web.sh",
             ])
             self.assertTrue(all(os.path.isabs(call[0][0]) for call in calls))
             self.assertTrue(all(call[0][2] == os.path.abspath(config_path) for call in calls))

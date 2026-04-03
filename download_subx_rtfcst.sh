@@ -42,6 +42,15 @@ mkdir -p "$TARGET_DIR"
 
 echo "[DL] group=$GROUP server_model=$SERVER_MODEL local_model=$LOCAL_MODEL var=$VAR type=$DATATYPE fcst=$FCST"
 
+if [[ "${SUBX_DOWNLOAD_STUB:-0}" == "1" ]]; then
+  marker_file="${TARGET_DIR}/${VAR}_${GROUP}-${LOCAL_MODEL}_${FCST}.download-request.json"
+  cat > "$marker_file" <<EOF
+{"mode":"stub","group":"$GROUP","server_model":"$SERVER_MODEL","local_model":"$LOCAL_MODEL","var":"$VAR","datatype":"$DATATYPE","fcst":"$FCST"}
+EOF
+  echo "[DL] Stub mode enabled. Wrote marker: $marker_file"
+  exit 0
+fi
+
 BASE_URL="https://iridl.ldeo.columbia.edu/SOURCES/.Models/.SubC"
 DATASET_URL="${BASE_URL}/.${GROUP}/.${SERVER_MODEL}/.${DATATYPE}/.${VAR}/dods/"
 
