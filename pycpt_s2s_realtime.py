@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 # coding: utf-8
+
 """
 pycpt_s2s_realtime.py
 ---------------------
@@ -26,16 +27,137 @@ Outputs
 - RPSS PNGs, Before/After PNGs, pycpt_manifest.json
 """
 
+
+from pathlib import Path
 import argparse
 import glob
 import json
 import shutil
+from datetime import datetime, timedelta
+import yaml
+import xarray as xr
+import pandas as pd
+from utils.utils_email import send_email
+from utils.subc_pycpt_utils import build_local_chirps_weekly, safe_concat
+
+
+def build_local_subx_predictor(
+    subx_root: Path,
+    model_id_local: str,
+    var_local: str,
+    leads,
+    fdate,
+    lon_west,
+    lon_east,
+    lat_south,
+    lat_north,
+    predictor_name,
+    target_data_dir: Path,
+):
+
+    fcst_dir = subx_root / model_id_local / 'forecast' / var_local
+    hcst_dir = subx_root / model_id_local / 'hindcast' / var_local
+    if not fcst_dir.is_dir() or not hcst_dir.is_dir():
+        raise FileNotFoundError(
+            f"Expected local SubX directories not found: {fcst_dir} and/or {hcst_dir}"
+        )
+
+    target_data_dir.mkdir(parents=True, exist_ok=True)
+
+    # Build hindcast weekly files: <predictor>-<leadlow>-<leadhigh>.nc
+    hc_files = sorted(glob.glob(str(hcst_dir / f"{var_local}_{model_id_local}_*.daily.nc")))
+    hc_files = [f for f in hc_files if Path(f).stat().st_size > 0]
+    if not hc_files:
+        raise RuntimeError(f"No non-empty hindcast files found in {hcst_dir}")
+
+    for _, lead_low, lead_high in leads:
+        out = target_data_dir / f"{predictor_name}-{lead_low}-{lead_high}.nc"
+        if out.exists():
+            continue
+
+        weekly_fields = []
+        for f in hc_files:
+            ds = xr.open_dataset(f)
+            if var_local not in ds:
+                ds.close()
+                continue
+            da = ds[var_local].isel(S=0)
+            da = _resolve_bounds(da, lon_west, lon_east, lat_south, lat_north)
+            wk = _to_weekly_tp(da, lead_low, lead_high)
+            t = ds['S'].values[0]
+            wk = wk.expand_dims(T=[t])
+            wk = wk.assign_coords(Ti=('T', [t]), Tf=('T', [t]))
+            weekly_fields.append(wk)
+            ds.close()
+
+        if not weekly_fields:
+            raise RuntimeError(f"No usable hindcast slices for lead {lead_low}-{lead_high}")
+
+        hc = xr.concat(weekly_fields, dim='T').sortby('T').rename('tp').to_dataset()
+        hc.to_netcdf(out)
+
+    # Build forecast weekly files: <predictor>-YYYY-M-D-L<leadlow>-<leadhigh>.nc
+    fc_file = fcst_dir / f"{var_local}_{model_id_local}_{fdate.strftime('%Y%m%d')}.daily.nc"
+    if not fc_file.is_file() or fc_file.stat().st_size == 0:
+        raise FileNotFoundError(f"Missing non-empty forecast file for {fdate:%Y%m%d}: {fc_file}")
+
+    dsf = xr.open_dataset(fc_file)
+    if var_local not in dsf:
+        dsf.close()
+        raise KeyError(f"Variable '{var_local}' not found in {fc_file}")
+
+    base = dsf[var_local].isel(S=0)
+    base = _resolve_bounds(base, lon_west, lon_east, lat_south, lat_north)
+    t = dsf['S'].values[0]
+
+    for _, lead_low, lead_high in leads:
+        out = target_data_dir / f"{predictor_name}-{fdate.year}-{fdate.month}-{fdate.day}-L{lead_low}-{lead_high}.nc"
+        if out.exists():
+            continue
+        wk = _to_weekly_tp(base, lead_low, lead_high)
+        wk = wk.expand_dims(T=[t]).assign_coords(Ti=('T', [t]), Tf=('T', [t]))
+        wk.rename('tp').to_dataset().to_netcdf(out)
+
+    dsf.close()
+#!/usr/bin/env python3
+# coding: utf-8
+"""
+pycpt_s2s_realtime.py
+---------------------
+Run a PyCPT v2 S2S workflow for a single region and initialization date.
+
+Features
+- Downloads predictor (GEFSv12.PRCP) and predictand (CHIRPS.PRCP) via CPT-DL
+- Runs CPT (CCA) using pycpt.subseasonal utilities (retroactive validation)
+- Saves RPSS maps for Weeks 1–4 and Before/After downscaling plots
+- Writes a pycpt_manifest.json listing outputs
+- Sends email on error if email.enabled is true in config.yaml
+
+Inputs (CLI)
+--regname            Region name label (used in filenames)
+--lat_minmax         Two floats: south north
+--lon_minmax         Two floats: east west (CPT uses −180..180 convention)
+--training_season    e.g., 'Feb-Apr'
+--fcstdate           Initialization date, YYYYMMDD
+--config             Path to config.yaml (default: config.yaml)
+
+Outputs
+- case_dir = paths.pycpt_case_root / <fcstdate>/
+- plots_dir = paths.pycpt_case_root / 'plots/'
+- RPSS PNGs, Before/After PNGs, pycpt_manifest.json
+"""
+
 from pathlib import Path
+import argparse
+import glob
+import json
+import shutil
 from datetime import datetime, timedelta
 
 import yaml
 
 from utils.utils_email import send_email
+from utils.subc_pycpt_utils import build_local_chirps_weekly, safe_concat
 
 def patch_cptio_zero_day_date_range_parser() -> None:
     """Patch cptio date-range parsing for same-day CPT date strings.
@@ -242,7 +364,7 @@ def _resolve_bounds(xr_da, lon_west, lon_east, lat_south, lat_north):
 
 
 def _lead_slice(da, lead_low, lead_high):
-    import pandas as pd
+    # pandas as pd is already imported globally
 
     low = pd.to_timedelta(f"{lead_low}.5D")
     high = pd.to_timedelta(f"{lead_high}.5D")
@@ -258,85 +380,6 @@ def _to_weekly_tp(da, lead_low, lead_high):
     return w
 
 
-def build_local_subx_predictor(
-    subx_root: Path,
-    model_id_local: str,
-    var_local: str,
-    leads,
-    fdate,
-    lon_west,
-    lon_east,
-    lat_south,
-    lat_north,
-    predictor_name,
-    target_data_dir: Path,
-):
-    import xarray as xr
-
-    fcst_dir = subx_root / model_id_local / 'forecast' / var_local
-    hcst_dir = subx_root / model_id_local / 'hindcast' / var_local
-    if not fcst_dir.is_dir() or not hcst_dir.is_dir():
-        raise FileNotFoundError(
-            f"Expected local SubX directories not found: {fcst_dir} and/or {hcst_dir}"
-        )
-
-    target_data_dir.mkdir(parents=True, exist_ok=True)
-
-    # Build hindcast weekly files: <predictor>-<leadlow>-<leadhigh>.nc
-    hc_files = sorted(glob.glob(str(hcst_dir / f"{var_local}_{model_id_local}_*.daily.nc")))
-    hc_files = [f for f in hc_files if Path(f).stat().st_size > 0]
-    if not hc_files:
-        raise RuntimeError(f"No non-empty hindcast files found in {hcst_dir}")
-
-    for _, lead_low, lead_high in leads:
-        out = target_data_dir / f"{predictor_name}-{lead_low}-{lead_high}.nc"
-        if out.exists():
-            continue
-
-        weekly_fields = []
-        for f in hc_files:
-            ds = xr.open_dataset(f)
-            if var_local not in ds:
-                ds.close()
-                continue
-            da = ds[var_local].isel(S=0)
-            da = _resolve_bounds(da, lon_west, lon_east, lat_south, lat_north)
-            wk = _to_weekly_tp(da, lead_low, lead_high)
-            t = ds['S'].values[0]
-            wk = wk.expand_dims(T=[t])
-            wk = wk.assign_coords(Ti=('T', [t]), Tf=('T', [t]))
-            weekly_fields.append(wk)
-            ds.close()
-
-        if not weekly_fields:
-            raise RuntimeError(f"No usable hindcast slices for lead {lead_low}-{lead_high}")
-
-        hc = xr.concat(weekly_fields, dim='T').sortby('T').rename('tp').to_dataset()
-        hc.to_netcdf(out)
-
-    # Build forecast weekly files: <predictor>-YYYY-M-D-L<leadlow>-<leadhigh>.nc
-    fc_file = fcst_dir / f"{var_local}_{model_id_local}_{fdate.strftime('%Y%m%d')}.daily.nc"
-    if not fc_file.is_file() or fc_file.stat().st_size == 0:
-        raise FileNotFoundError(f"Missing non-empty forecast file for {fdate:%Y%m%d}: {fc_file}")
-
-    dsf = xr.open_dataset(fc_file)
-    if var_local not in dsf:
-        dsf.close()
-        raise KeyError(f"Variable '{var_local}' not found in {fc_file}")
-
-    base = dsf[var_local].isel(S=0)
-    base = _resolve_bounds(base, lon_west, lon_east, lat_south, lat_north)
-    t = dsf['S'].values[0]
-
-    for _, lead_low, lead_high in leads:
-        out = target_data_dir / f"{predictor_name}-{fdate.year}-{fdate.month}-{fdate.day}-L{lead_low}-{lead_high}.nc"
-        if out.exists():
-            continue
-        wk = _to_weekly_tp(base, lead_low, lead_high)
-        wk = wk.expand_dims(T=[t]).assign_coords(Ti=('T', [t]), Tf=('T', [t]))
-        wk.rename('tp').to_dataset().to_netcdf(out)
-
-    dsf.close()
 
 
 def plot_rpss_map(da, title: str, outname: str, vmin=-1, vmax=1):
@@ -365,6 +408,9 @@ def plot_rpss_map(da, title: str, outname: str, vmin=-1, vmax=1):
 
 
 def main():
+
+
+    # Argument parsing
     p = argparse.ArgumentParser()
     p.add_argument('--regname', required=True)
     p.add_argument('--lat_minmax', nargs=2, type=float, required=True)
@@ -377,7 +423,7 @@ def main():
                    help='Optional local model IDs to use for PyCPT predictors (e.g., EMC-GEFSv12_CPC NCEP-CFSv2)')
     args = p.parse_args()
 
-    # Load config & resolve paths
+    # Config loading
     cfg = yaml.safe_load(open(args.config))
     email_cfg = cfg.get('email', {})
     pycpt_cfg = cfg.get('pycpt', {}) or {}
@@ -416,11 +462,7 @@ def main():
         download_args = {
             'fdate':  fdate,
             'leads':  [('Week 1', 1, 7), ('Week 2', 8, 14), ('Week 3', 15, 21), ('Week 4', 22, 28)],
-            # cptdl expects this key and validates downloaded season length against it.
-            # For subseasonal weekly download, default to the forecast month unless
-            # explicitly overridden in config.pycpt.target.
             'target': download_target,
-            # pycpt's SubX URL templates still interpolate {training_season}.
             'training_season': args.training_season,
             'predictor_extent': {
                 'east': args.lon_minmax[0], 'west': args.lon_minmax[1],
@@ -434,70 +476,44 @@ def main():
         }
 
         # Setup local domain workspace
+
+
         domain_dir = pycpt.setup(case_dir, download_args['predictor_extent'])
 
-        if use_local_subx_predictor:
-            subx_root = Path(pycpt_cfg.get('local_subx_root') or cfg['paths']['rt_root']).expanduser().resolve()
-            var_map = {'PRCP': 'pr', 'T2M': 'tas', 'TMP': 'tas'}
-            for predictor_name, predictor_model_id in zip(predictor_names, predictor_model_ids):
-                model_tag, var_tag = predictor_name.split('.', 1)
-                var_local = var_map.get(var_tag.upper(), var_tag.lower())
-                _ = model_tag
-                build_local_subx_predictor(
-                    subx_root=subx_root,
-                    model_id_local=predictor_model_id,
-                    var_local=var_local,
+        # --- Build CHIRPS weekly files from local daily data if missing ---
+        if use_local_data and 'CHIRPS.PRCP' in predictand_name:
+            local_chirps_daily_dir = Path(pycpt_cfg.get('local_chirps_daily_dir', ''))
+            local_chirps_var = pycpt_cfg.get('local_chirps_var', 'precip')
+            if local_chirps_daily_dir.is_dir():
+                lat_range = (args.lat_minmax[0], args.lat_minmax[1])
+                lon_range = (args.lon_minmax[0], args.lon_minmax[1])
+                build_local_chirps_weekly(
+                    daily_dir=local_chirps_daily_dir,
+                    out_dir=domain_dir / 'data',
+                    varname=local_chirps_var,
+                    fcst_dt=fdate,
                     leads=download_args['leads'],
-                    fdate=fdate,
-                    lon_west=args.lon_minmax[1],
-                    lon_east=args.lon_minmax[0],
-                    lat_south=args.lat_minmax[0],
-                    lat_north=args.lat_minmax[1],
-                    predictor_name=predictor_name,
-                    target_data_dir=domain_dir / 'data',
+                    lat_range=lat_range,
+                    lon_range=lon_range,
                 )
-            # Keep observations download enabled unless fully staged local files are provided.
-            force_download = False
-
-        if use_local_data:
-            local_data_dir_raw = pycpt_cfg.get('local_data_dir')
-            if not local_data_dir_raw:
-                raise ValueError("pycpt.use_local_data=true requires pycpt.local_data_dir in config")
-
-            local_data_dir = Path(local_data_dir_raw).expanduser().resolve()
-            if not local_data_dir.is_dir():
-                raise FileNotFoundError(f"Configured pycpt.local_data_dir does not exist: {local_data_dir}")
-
-            stage_local_data(local_data_dir, domain_dir / 'data')
-            expected = expected_local_files(predictor_names, predictand_name, download_args['leads'], fdate)
-            missing = [name for name in expected if not (domain_dir / 'data' / name).is_file()]
-            if missing and local_data_strict:
-                raise RuntimeError(
-                    "Missing required local PyCPT files in strict mode:\n"
-                    + "\n".join(f"- {name}" for name in missing)
-                )
-            if missing:
-                print(f"[WARN] Missing {len(missing)} local PyCPT files; downloader may fetch remaining inputs.")
             else:
-                print("[INFO] All required local PyCPT files are present; no download should be needed.")
-            force_download = False
+                print(f"[WARN] local_chirps_daily_dir does not exist: {local_chirps_daily_dir}")
 
-        # Download hindcasts/observations/forecasts from IRIDL via CPT-DL
-        hindcast_data, Y, forecast_data = subseasonal.download_data(
-            predictor_names, predictand_name, download_args, domain_dir, force_download=force_download
-        )
 
-        print('[PyCPT] Predictor hindcast summary:')
-        print(json.dumps(summarize_dataarray(hindcast_data), indent=2))
-        print('[PyCPT] Predictand observation summary:')
-        print(json.dumps(summarize_dataarray(Y), indent=2))
-        print('[PyCPT] Predictor forecast summary:')
-        print(json.dumps(summarize_dataarray(forecast_data), indent=2))
+        # --- Load hindcast data from generated files ---
+        from utils.subc_pycpt_utils import safe_concat
+        hindcast_files = sorted((domain_dir / 'data').glob(f"{predictor_names[0]}-*-*.nc"))
+        hindcast_datasets = [xr.open_dataset(f) for f in hindcast_files]
+        hindcast_data = safe_concat(hindcast_datasets, dim='model')
 
-        # Smoke mode: exit after data validation, skip expensive CPT evaluation
-        if args.smoke:
-            print('[PyCPT] SMOKE MODE: Data pipeline validated, skipping CPT evaluation.')
-            return
+        # --- Load forecast data from generated files ---
+        forecast_files = sorted((domain_dir / 'data').glob(f"{predictor_names[0]}-*-*-L*.nc"))
+        forecast_datasets = [xr.open_dataset(f) for f in forecast_files]
+        forecast_data = safe_concat(forecast_datasets, dim='model')
+
+        # --- Load observed CHIRPS weekly data (Y) from local files ---
+        chirps_files = sorted((domain_dir / 'data').glob("CHIRPS.PRCP-*.nc"))
+        Y = xr.open_mfdataset(chirps_files, combine='nested', concat_dim='time')
 
         # CPT arguments (matches your working settings)
         cpt_args = {
@@ -516,30 +532,12 @@ def main():
             'cpt_kwargs': {}
         }
 
-        # Evaluate models: returns hindcasts, forecasts, skill & modes
-        try:
-            hcsts, fcsts, skill, pxs, pys = subseasonal.evaluate_models(
-                hindcast_data, forecast_data, Y, MOS, cpt_args, domain_dir
-            )
-        except Exception as cpt_exc:
-            debug_payload = {
-                'error': str(cpt_exc),
-                'fcstdate': args.fcstdate,
-                'region': args.regname,
-                'training_season': args.training_season,
-                'download_args': {
-                    'target': download_args.get('target'),
-                    'training_season': download_args.get('training_season'),
-                    'leads': download_args.get('leads'),
-                },
-                'hindcast_summary': summarize_dataarray(hindcast_data),
-                'observation_summary': summarize_dataarray(Y),
-                'forecast_summary': summarize_dataarray(forecast_data),
-                'cpt_args': cpt_args,
-            }
-            write_debug_summary(case_dir / 'pycpt_debug_summary.json', debug_payload)
-            raise
 
+
+        # Evaluate models: returns hindcasts, forecasts, skill & modes
+        hcsts, fcsts, skill, pxs, pys = subseasonal.evaluate_models(
+            hindcast_data, forecast_data, Y, MOS, cpt_args, domain_dir
+        )
         # RPSS maps for Weeks 1–4 (model 0)
         rpss = skill['rank_probability_skill_score'].isel(model=0)
         ic_title = download_args['fdate'].strftime("%m/%d/%Y")
@@ -588,9 +586,12 @@ def main():
 
     except Exception as e:
         # Email on error (best effort)
-        body = f"PyCPT failed for {args.regname} {args.fcstdate}:\n{e}"
+        args_ = locals().get('args')
+        regname = getattr(args_, 'regname', '<undefined>')
+        fcstdate = getattr(args_, 'fcstdate', '<undefined>')
+        body = f"PyCPT failed for {regname} {fcstdate}:\n{e}"
         try:
-            send_email(email_cfg, f"PyCPT error {args.fcstdate} {args.regname}", body)
+            send_email(email_cfg if 'email_cfg' in locals() else {}, f"PyCPT error {fcstdate} {regname}", body)
         except Exception:
             pass
         raise

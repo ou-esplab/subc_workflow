@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+from __future__ import annotations
 # coding: utf-8
 """
 subc_pycpt_utils.py
@@ -16,18 +17,52 @@ Functions
 - compute_exceedance (generic thresholds)
 - plot_exceedance_summary, plot_exceedance_panels (Cartopy plots)
 """
-from __future__ import annotations
+
+import xarray as xr
+import pandas as pd
+from pathlib import Path
+from datetime import datetime, timedelta
 from typing import List, Tuple, Optional, Dict
 
 import os
 import glob
 import json
 import re
-from datetime import datetime, timedelta
-
 import numpy as np
-import pandas as pd
-import xarray as xr
+
+def build_local_chirps_weekly(
+    daily_dir: Path,
+    out_dir: Path,
+    varname: str,
+    fcst_dt: datetime,
+    leads,
+    lat_range,
+    lon_range,
+):
+    """
+    Build weekly CHIRPS files from daily data for each lead window.
+    """
+    out_dir.mkdir(parents=True, exist_ok=True)
+    for lead_name, lead_low, lead_high in leads:
+        start = fcst_dt + timedelta(days=lead_low - 1)
+        end = fcst_dt + timedelta(days=lead_high - 1)
+        # Find all daily files in the range
+        days = pd.date_range(start, end)
+        daily_files = [daily_dir / f"chirps-v2.0.{d.strftime('%Y.%m.%d')}.nc" for d in days]
+        if not all(f.exists() for f in daily_files):
+            print(f"[WARN] Missing daily CHIRPS files for {lead_name}: {[str(f) for f in daily_files if not f.exists()]}")
+            continue
+        # Open and stack
+        ds_list = [xr.open_dataset(f)[varname] for f in daily_files]
+        arr = xr.concat(ds_list, dim="time")
+        # Subset
+        arr = arr.sel(lat=slice(*lat_range), lon=slice(*lon_range))
+        # Aggregate to weekly sum
+        arr_week = arr.sum(dim="time")
+        arr_week = arr_week.expand_dims(time=[start])
+        # Save in expected format
+        out_name = f"CHIRPS.PRCP-{lead_low}-{lead_high}.nc"
+        arr_week.to_netcdf(out_dir / out_name)
 
 
 def _nearest_month_day_label(labels, init_mdy: str) -> str:

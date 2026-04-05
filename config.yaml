@@ -28,6 +28,10 @@ exceedance:
   percentile: 95
   window_days: 7
   modelkey: GEFSthres
+pycpt_regions:
+  - Venezuela
+  - Iran
+  - Mexico
 regions:
   - name: Global
     subx:  { lon: [0, 360], lat: [-60, 80] }
@@ -42,6 +46,9 @@ regions:
     subx:  { lon: [242, 263], lat: [20, 33] }
     pycpt: { lon: [-118, -97], lat: [20, 33] }
 pycpt:
+  # Local CHIRPS daily data directory and variable name for building weekly files if needed
+  local_chirps_daily_dir: /data/esplab/shared/obs/gridded/atm/precip/daily/chirps-v2.0/p25
+  local_chirps_var: precip
   mos: CCA
   training_season: Feb-Apr
   # Optional predictor variable suffix used when building predictor names
@@ -61,14 +68,14 @@ pycpt:
   # If set, these names are used directly by PyCPT download/evaluation.
   predictor_names: []
   # Optional local-data mode to avoid downloads in pycpt_s2s_realtime.py.
-  use_local_data: false
-  local_data_dir: null
+  use_local_data: true
+  local_data_dir: /data/esplab/subc-backup/
   # Optional mode to build PyCPT predictor files directly from local SubX archive:
   #   <root>/<GROUP>-<MODEL>/<forecast,hindcast>/<var>/<var>_<GROUP>-<MODEL>_YYYYMMDD.daily.nc
   use_local_subx_predictor: false
   local_subx_root: /data/esplab/subc-backup
   local_subx_model_id: EMC-GEFSv12_CPC
-  local_data_strict: false
+  local_data_strict: true
   force_download: false
   # Optional cptdl target keyword used for seasonal-length checks; defaults to init month.
   target: null

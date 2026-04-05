@@ -28,38 +28,41 @@ fi
 if [[ -z "${CONFIG:-}" || ! -f "$CONFIG" ]]; then echo "[FATAL] CONFIG not found: '$CONFIG_IN' -> '$CONFIG'"; exit 2; fi
 echo "==> [pycpt_run] Using FCSTDATE=$FCSTDATE CONFIG=$CONFIG"
 
-# Regions (defensive; stderr surfaced)
+# Regions for pycpt: use pycpt_regions if present, else all regions
 readarray -t LINES < <(
 python3 -c '
 import sys, signal, yaml, traceback
 signal.signal(signal.SIGPIPE, signal.SIG_DFL)
 try:
-    cfg=yaml.safe_load(open(sys.argv[1])) or {}
-    only_raw = (sys.argv[2] or "").strip()
-    only = set()
-    if only_raw:
-        for token in only_raw.replace(",", " ").split():
-            token = token.strip()
-            if token:
-                only.add(token)
-    def to_negpos(lons): return [ (lo-360 if (lo is not None and lo>180) else lo) for lo in lons ]
-    for r in cfg.get("regions", []):
-        name = r.get("name","<no-name>")
-        if only and name not in only:
-            continue
-        p = r.get("pycpt") or {}
-        lat, lon = p.get("lat"), p.get("lon")
-        if not lat or not lon:
-            subx = r.get("subx") or {}
-            slat, slon = subx.get("lat"), subx.get("lon")
-            if slat and len(slat)==2 and slon and len(slon)==2:
-                lat, lon = slat, to_negpos(slon)
-            else:
-                lat, lon = [None,None], [None,None]
-        print(f"{name}|{lat[0]} {lat[1]}|{lon[0]} {lon[1]}")
+  cfg=yaml.safe_load(open(sys.argv[1])) or {}
+  only_raw = (sys.argv[2] or "").strip()
+  only = set()
+  if only_raw:
+    for token in only_raw.replace(",", " ").split():
+      token = token.strip()
+      if token:
+        only.add(token)
+  def to_negpos(lons): return [ (lo-360 if (lo is not None and lo>180) else lo) for lo in lons ]
+  region_names = cfg.get("pycpt_regions") or [r.get("name","<no-name>") for r in cfg.get("regions",[])]
+  for r in cfg.get("regions", []):
+    name = r.get("name","<no-name>")
+    if name not in region_names:
+      continue
+    if only and name not in only:
+      continue
+    p = r.get("pycpt") or {}
+    lat, lon = p.get("lat"), p.get("lon")
+    if not lat or not lon:
+      subx = r.get("subx") or {}
+      slat, slon = subx.get("lat"), subx.get("lon")
+      if slat and len(slat)==2 and slon and len(slon)==2:
+        lat, lon = slat, to_negpos(slon)
+      else:
+        lat, lon = [None,None], [None,None]
+    print(f"{name}|{lat[0]} {lat[1]}|{lon[0]} {lon[1]}")
 except Exception:
-    traceback.print_exc()
-    sys.exit(1)
+  traceback.print_exc()
+  sys.exit(1)
 ' "$CONFIG" "$PYCPT_ONLY_RAW" 2> >(sed 's/^/[PYERR] /' >&2)
 )
 
@@ -126,7 +129,7 @@ run_region() {
   fi
   echo "==> [pycpt_run] Running PyCPT for region '$REG' (LATS=$LATS LONS=$LONS SEAS=$SEAS)"
   local -a cmd=(
-    ./pycpt_s2s_realtime.py
+    python ./pycpt_s2s_realtime.py
     --regname "$REG"
     --lat_minmax $LATS
     --lon_minmax $LONS

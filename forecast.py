@@ -810,7 +810,9 @@ def _plot_exceedance_region_panels(
         cbar = fig.colorbar(mappable, cax=cax, orientation="horizontal")
         cbar.set_label("%", fontsize=10)
 
-    out_png = os.path.join(out_images, f"exceed_panel_{var}_{region_name}_{fcstdate}_wk{week_num}.png")
+    region_dir = os.path.join(out_images, region_name)
+    os.makedirs(region_dir, exist_ok=True)
+    out_png = os.path.join(region_dir, f"exceed_panel_{var}_{region_name}_{fcstdate}_wk{week_num}.png")
     fig.savefig(out_png, dpi=150)
     plt.close(fig)
     print(f"[SAVE] {out_png}")
@@ -1302,8 +1304,8 @@ def main():
                         mme_counts_by_region[region_name] = counts
                         mme_members_by_region[region_name] = model_nens
 
-                    out_file = os.path.join(out_data, f"exceed_{mid}_{var}_{region_name}_{fcstdate}.nc")
-                    probs.to_netcdf(out_file)
+                    #out_file = os.path.join(out_data, f"exceed_{mid}_{var}_{region_name}_{fcstdate}.nc")
+                    #probs.to_netcdf(out_file)
 
                     # Compute valid date range from time_window coord for title
                     if probs.sizes.get('time_window', 0) > 0 and np.issubdtype(probs['time_window'].dtype, np.datetime64):
