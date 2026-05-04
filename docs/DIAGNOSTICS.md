@@ -4,8 +4,8 @@ This document tracks diagnostic utilities and how to run ad hoc checks safely.
 
 ## Diagnostic Utilities
 
-- [utils/exceedance_diag.py](utils/exceedance_diag.py): validates exceedance dimensionality and threshold selection behavior by model and region.
-- [utils/split_percentiles_by_mmdd.py](utils/split_percentiles_by_mmdd.py): utility to split large percentile climatology files into per-MMDD threshold files.
+- [utils/exceedance_diag.py](../utils/exceedance_diag.py): validates exceedance dimensionality and threshold selection behavior by model and region.
+- [utils/split_percentiles_by_mmdd.py](../utils/split_percentiles_by_mmdd.py): utility to split large percentile climatology files into per-MMDD threshold files.
 
 ## Diagnostic Output Location
 

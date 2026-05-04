@@ -6,6 +6,10 @@ export PYTHONUNBUFFERED=1
 PS4='+ $(date "+%F %T") make_fcsts.sh: '
 set -x
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+cd "$ROOT_DIR"
+
 FCSTDATE="${1:-}"
 CONFIG_IN="${2:-config.yaml}"
 CONFIG="$(python3 -c 'import os,sys; print(os.path.abspath(sys.argv[1]))' "$CONFIG_IN")"
@@ -23,6 +27,18 @@ import yaml
 
 cfg = yaml.safe_load(open(sys.argv[1])) or {}
 print(1 if (cfg.get("workflow") or {}).get("products_smoke", False) else 0)
+PY
+    )"
+fi
+
+DEBUG_PRODUCTS="${SUBX_PRODUCTS_DEBUG:-}"
+if [[ -z "$DEBUG_PRODUCTS" ]]; then
+    DEBUG_PRODUCTS="$(python3 - <<'PY' "$CONFIG"
+import sys
+import yaml
+
+cfg = yaml.safe_load(open(sys.argv[1])) or {}
+print(1 if (cfg.get("workflow") or {}).get("products_debug", False) else 0)
 PY
     )"
 fi
@@ -50,16 +66,17 @@ mkdir -p "${OUTW}/${FCSTDATE}/"{images,data} "${OUTD}/${FCSTDATE}/data"
 LOCK="${OUTW}/${FCSTDATE}/subxfcst.lock"; touch "$LOCK"
 cleanup(){ rm -f "$LOCK"; }; trap cleanup EXIT
 
-echo "==> [make_fcsts] Validation"
-stdbuf -oL -eL python3 validate_realtime.py --config "$CONFIG" --fcstdate "$FCSTDATE" --outdir "${OUTW}/${FCSTDATE}/data"
-
 echo "==> [make_fcsts] Forecast"
 FORECAST_ARGS=(--config "$CONFIG" --fcstdate "$FCSTDATE" --save)
 if [[ "$SMOKE_PRODUCTS" == "1" ]]; then
     echo "==> [make_fcsts] Running in smoke mode (allow empty realtime inputs)"
     FORECAST_ARGS+=(--allow-empty-input)
 fi
-stdbuf -oL -eL python3 forecast.py "${FORECAST_ARGS[@]}"
+if [[ "$DEBUG_PRODUCTS" == "1" ]]; then
+    echo "==> [make_fcsts] Running with debug logging enabled"
+    FORECAST_ARGS+=(--debug)
+fi
+stdbuf -oL -eL python3 "$SCRIPT_DIR/forecast.py" "${FORECAST_ARGS[@]}"
 
 # Best effort perms
 chgrp -R esplab "${OUTW}/${FCSTDATE}" || true

@@ -68,7 +68,7 @@ mapfile -t START_DATES < <(
 )
 
 echo "[DL] Fetching metadata from $DATASET_URL"
-METADATA="$(python3 "$SCRIPT_DIR/utils/get_subx_metadata.py" "$DATASET_URL")"
+METADATA="$(python3 "$SCRIPT_DIR/../utils/get_subx_metadata.py" "$DATASET_URL")"
 
 mapfile -t AVAIL_DATES < <(
   printf '%s\n' "$METADATA" | awk '/^DATE /{print substr($2,1,8)}' | sort -u

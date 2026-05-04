@@ -41,12 +41,14 @@ def main():
     ap.add_argument("--config", required=True, help="YAML config file")
     ap.add_argument("--init", default=None, help="Init date: SubX=YYYYMMDD, NMME=YYYYMM or YYYYMMDD")
     ap.add_argument("--system", required=True, help="subx|nmme")
-    ap.add_argument("--stages", nargs="*", default=["ingest","products","pycpt","arraylake","publish"],
-                    help="Stages to run in order: ingest products pycpt arraylake publish")
+    ap.add_argument("--stages", nargs="*", default=["ingest","preprocess","products","pycpt","arraylake","publish"],
+                    help="Stages to run in order: ingest preprocess products pycpt arraylake publish")
     ap.add_argument("--publish-subdir", default=None,
                     help="SubX only: optional destination subdir under date, e.g., test")
     ap.add_argument("--products-dry-run", action="store_true",
                     help="SubX only: run products stage in smoke/dry-run mode")
+    ap.add_argument("--products-debug", action="store_true",
+                    help="SubX only: run products stage with verbose debug diagnostics")
     ap.add_argument("--pycpt-only", nargs="+", default=None,
                     help="SubX only: run PyCPT for only these region names")
     ap.add_argument("--pycpt-max-workers", type=int, default=1,
@@ -70,16 +72,19 @@ def main():
 
     if system == "subx":
         stage_cmds = {
-            "ingest":   [str(ROOT_DIR / "update_subx_fcsts.sh"), init, config_path],
-            "products": [str(ROOT_DIR / "make_fcsts.sh"), init, config_path],
-            "pycpt":    [str(ROOT_DIR / "pycpt_run.sh"), init, config_path],
-            "arraylake": [str(ROOT_DIR / "run_addvars_rt.sh"), init, config_path],
-            "publish":  [str(ROOT_DIR / "publish_subx_web.sh"), init, config_path],
+            "ingest":     [str(ROOT_DIR / "ingest" / "update_subx_fcsts.sh"), init, config_path],
+            "preprocess": [str(ROOT_DIR / "preprocess" / "run_preprocess.sh"), init, config_path],
+            "products":   [str(ROOT_DIR / "products" / "make_fcsts.sh"), init, config_path],
+            "pycpt":      [str(ROOT_DIR / "postprocess" / "pycpt_run.sh"), init, config_path],
+            "arraylake":  [str(ROOT_DIR / "arraylake" / "run_addvars_rt.sh"), init, config_path],
+            "publish":    [str(ROOT_DIR / "publish" / "publish_subx_web.sh"), init, config_path],
         }
         stage_envs = {
             "ingest": {},
+            "preprocess": {},
             "products": {
                 "SUBX_PRODUCTS_SMOKE": "1" if args.products_dry_run else None,
+                "SUBX_PRODUCTS_DEBUG": "1" if args.products_debug else None,
             },
             "pycpt": {
                 "PYCPT_ONLY": ",".join(args.pycpt_only) if args.pycpt_only else None,

@@ -22,7 +22,7 @@ class DownloadScriptTests(unittest.TestCase):
 
             subprocess.run(
                 [
-                    str(REPO_ROOT / "download_subx_rtfcst.sh"),
+                    str(REPO_ROOT / "ingest" / "download_subx_rtfcst.sh"),
                     "GMAO",
                     "GEOS_V2p1_5daily",
                     "pr",

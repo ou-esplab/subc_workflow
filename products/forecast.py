@@ -35,6 +35,9 @@ python3 forecast.py --config config.yaml --fcstdate YYYYMMDD --save
 """
 
 from __future__ import annotations
+import sys
+from pathlib import Path as _Path
+sys.path.insert(0, str(_Path(__file__).resolve().parent.parent))
 import argparse
 import glob
 import os
@@ -52,12 +55,25 @@ from utils.subc_pycpt_utils import (
 )
 
 
+DEBUG = False
+
+
+def _env_flag(name: str) -> bool:
+    val = os.environ.get(name, "")
+    return str(val).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _debug_print(msg: str) -> None:
+    if DEBUG:
+        print(msg)
+
+
 def _remove_stale_exceedance_outputs(out_dir: str, model_id: str, var: str, fcstdate: str, suffix: str) -> None:
     pattern = os.path.join(out_dir, f"exceed_{model_id}_{var}_*_{fcstdate}*.{suffix}")
     for path in glob.glob(pattern):
         try:
             os.remove(path)
-            print(f"[INFO] Removed stale exceedance output: {path}")
+            _debug_print(f"[INFO] Removed stale exceedance output: {path}")
         except OSError as exc:
             print(f"[WARN] Failed to remove stale output {path}: {exc}")
 
@@ -85,7 +101,7 @@ def _select_week_window_from_probs(
         chosen = pd.Timestamp(tw[nearest_idx])
         delta_days = abs((chosen - pd.Timestamp(week_end)).days)
         if delta_days <= allow_nearest_days:
-            print(
+            _debug_print(
                 f"[INFO] Using nearest time_window for week {week_num} in {region_name}: "
                 f"target_end={pd.Timestamp(week_end).date()} chosen={chosen.date()}"
             )
@@ -107,7 +123,7 @@ def _remove_stale_exceedance_model_images(out_images: str, fcstdate: str) -> Non
             continue
         try:
             os.remove(path)
-            print(f"[INFO] Removed stale exceedance model image: {path}")
+            _debug_print(f"[INFO] Removed stale exceedance model image: {path}")
         except OSError as exc:
             print(f"[WARN] Failed to remove stale exceedance model image {path}: {exc}")
 
@@ -127,7 +143,7 @@ def _remove_stale_legacy_products(out_images: str) -> None:
             except OSError as exc:
                 print(f"[WARN] Failed to remove stale legacy image {path}: {exc}")
     if removed:
-        print(f"[INFO] Removed {removed} stale legacy product image(s).")
+        _debug_print(f"[INFO] Removed {removed} stale legacy product image(s).")
 
 def _write_backward_compat_pr_anom_files(ds_save: xr.Dataset, out_data: str, fcstdate: str) -> None:
     """
@@ -768,7 +784,7 @@ def _plot_exceedance_region_panels(
                 finite_vals = vals[np.isfinite(vals)]
                 if finite_vals.size:
                     q10, q50, q90 = np.nanpercentile(finite_vals, [10, 50, 90])
-                    print(
+                    _debug_print(
                         f"[EXCEED-DIAG] region={region_name} model={model_id} "
                         f"min={np.nanmin(finite_vals):.1f} p10={q10:.1f} p50={q50:.1f} p90={q90:.1f} "
                         f"max={np.nanmax(finite_vals):.1f} std={np.nanstd(finite_vals):.2f}"
@@ -931,12 +947,19 @@ def _plot_legacy_weekly_products(
     )
 
 def main():
+    global DEBUG
+
     ap = argparse.ArgumentParser()
     ap.add_argument('--config', required=True, help='Path to config.yaml')
     ap.add_argument('--fcstdate', required=False, help='YYYYMMDD (optional; defaults to latest Thursday)')
     ap.add_argument('--save', action='store_true', help='Write NetCDF + manifest to disk')
     ap.add_argument('--allow-empty-input', action='store_true', help='Exit successfully when no realtime model files are available')
+    ap.add_argument('--debug', action='store_true', help='Enable verbose diagnostic logging')
     args = ap.parse_args()
+
+    DEBUG = bool(args.debug or _env_flag("SUBX_PRODUCTS_DEBUG"))
+    if DEBUG:
+        print("[DEBUG] products debug logging enabled")
 
     # ---- Config & date handling ----
     with open(args.config, 'r', encoding='utf-8') as config_file:
@@ -978,7 +1001,7 @@ def main():
 
         # Canonical model_id for coords/labels/outputs
         model_id_local = f"{group}-{local_model}"
-        print(f"[MODEL] server={group}-{server_model}  local={model_id_local}")
+        _debug_print(f"[MODEL] server={group}-{server_model}  local={model_id_local}")
 
         var_dsets_anom = []
         var_dsets_member_anom = []
@@ -1003,7 +1026,7 @@ def main():
 
             fp, chosen_model_name, chosen_init = chosen
             ds = xr.open_dataset(fp)
-            print(f"  [INFO] Using init for {var}: {group}-{chosen_model_name} {chosen_init:%Y%m%d}")
+            _debug_print(f"  [INFO] Using init for {var}: {group}-{chosen_model_name} {chosen_init:%Y%m%d}")
 
             model_id_local = f"{group}-{chosen_model_name}"
             prev_init = model_init_dates.get(model_id_local)
@@ -1088,11 +1111,11 @@ def main():
 
         if var_dsets_anom:
             ds_model_anom = xr.merge(var_dsets_anom, compat="override").assign_coords(model=model_id_local)
-            print(f"  [DBG] {model_id_local} anomaly vars: {list(ds_model_anom.data_vars)}")
+            _debug_print(f"  [DBG] {model_id_local} anomaly vars: {list(ds_model_anom.data_vars)}")
             ds_anoms_by_model.append(ds_model_anom)
         if var_dsets_member_anom:
             ds_model_member_anom = xr.merge(var_dsets_member_anom, compat="override").assign_coords(model=model_id_local)
-            print(f"  [DBG] {model_id_local} member anomaly vars: {list(ds_model_member_anom.data_vars)}")
+            _debug_print(f"  [DBG] {model_id_local} member anomaly vars: {list(ds_model_member_anom.data_vars)}")
             ds_member_anoms_by_model.append(ds_model_member_anom)
         if var_dsets_full:
             ds_full_by_model.append(xr.merge(var_dsets_full, compat="override").assign_coords(model=model_id_local))
@@ -1117,15 +1140,15 @@ def main():
 
     # ---- Combine → weeks → SUBC‑MME ----
     ds_models = safe_concat(ds_anoms_by_model, dim='model')
-    print("[DBG] ds_models dims:", dict(ds_models.sizes))
-    print("[DBG] ds_models vars:", list(ds_models.data_vars))
+    _debug_print(f"[DBG] ds_models dims: {dict(ds_models.sizes)}")
+    _debug_print(f"[DBG] ds_models vars: {list(ds_models.data_vars)}")
     ds_week   = weekly_reduce(ds_models, fcstdate, nweeks=4)
 
     ds_week_members = None
     if ds_member_anoms_by_model:
         ds_models_members = safe_concat(ds_member_anoms_by_model, dim='model')
-        print("[DBG] ds_models_members dims:", dict(ds_models_members.sizes))
-        print("[DBG] ds_models_members vars:", list(ds_models_members.data_vars))
+        _debug_print(f"[DBG] ds_models_members dims: {dict(ds_models_members.sizes)}")
+        _debug_print(f"[DBG] ds_models_members vars: {list(ds_models_members.data_vars)}")
         ds_week_members = weekly_reduce(ds_models_members, fcstdate, nweeks=4)
     
     if int(ds_week.sizes.get('model', 0)) > 1:
@@ -1206,7 +1229,7 @@ def main():
             }
             mme_counts_by_region: dict[str, xr.DataArray] = {}
             mme_members_by_region: dict[str, int] = {}
-            print(
+            _debug_print(
                 "[INFO] Exceedance threshold lookup convention: "
                 f"<hc_root>/{var}{lev}/daily/percentiles/{{model}}-{{group}}/{var}_{{model}}-{{group}}/"
                 f"{var}_{{group}}-{{model}}-MMDD.{pct}p.nc"
@@ -1271,7 +1294,7 @@ def main():
                     _remove_stale_exceedance_outputs(out_images, mid, var, fcstdate, "png")
                     continue
                 if f"_{mmdd}." not in os.path.basename(thr_path):
-                    print(f"[INFO] Using nearest threshold for {mid}: {os.path.basename(thr_path)}")
+                    _debug_print(f"[INFO] Using nearest threshold for {mid}: {os.path.basename(thr_path)}")
 
                 for r in cfg.get('regions', []):
                     region_name = r['name']

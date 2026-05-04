@@ -15,10 +15,11 @@ set -euo pipefail
 
 # ---- Resolve script location ------------------------------------------------
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-cd "$SCRIPT_DIR"
+ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+cd "$ROOT_DIR"
 
 # ---- Configuration ----------------------------------------------------------
-CONFIG="${SUBX_CONFIG:-$SCRIPT_DIR/config.yaml}"
+CONFIG="${SUBX_CONFIG:-$ROOT_DIR/config.yaml}"
 STAGES="${SUBX_STAGES:-ingest products pycpt arraylake publish}"
 CONDA_BASE="${CONDA_BASE:-$HOME/miniconda3}"
 ENV_NAME="${ENV_NAME:-subc_workflow_env}"
@@ -26,7 +27,7 @@ LOCK_FILE="/tmp/subx_cron.lock"
 
 # ---- Logging ----------------------------------------------------------------
 TS="$(date -u +%Y%m%d_%H%M%S)"
-LOG_DIR="$SCRIPT_DIR/logs/cron"
+LOG_DIR="$ROOT_DIR/logs/cron"
 mkdir -p "$LOG_DIR"
 LOG_FILE="$LOG_DIR/subx_${TS}.log"
 
@@ -95,7 +96,7 @@ trap 'notify_failure' ERR
 # ---- Run workflow -----------------------------------------------------------
 log "[INFO] Running stages: $STAGES"
 # shellcheck disable=SC2086
-python3 "$SCRIPT_DIR/runners/cli.py" \
+python3 "$ROOT_DIR/runners/cli.py" \
     --system subx \
     --config "$CONFIG" \
     --init "$INIT_DATE" \

@@ -47,7 +47,7 @@ class ForecastSmokeTests(unittest.TestCase):
             subprocess.run(
                 [
                     "python3",
-                    str(REPO_ROOT / "forecast.py"),
+                    str(REPO_ROOT / "products" / "forecast.py"),
                     "--config",
                     str(config_path),
                     "--fcstdate",

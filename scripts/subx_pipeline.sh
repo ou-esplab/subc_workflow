@@ -2,7 +2,8 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-cd "$SCRIPT_DIR"
+ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+cd "$ROOT_DIR"
 
 ENV_NAME="${ENV_NAME:-subc_workflow_env}"
 ENV_PREFIX="${ENV_PREFIX:-}"
@@ -85,4 +86,4 @@ fi
 trap 'notify_failure' ERR
 
 echo "[INFO] Delegating to runners/cli.py for FCSTDATE=$FCSTDATE CONFIG=$CONFIG"
-python3 "$SCRIPT_DIR/runners/cli.py" --system subx --config "$CONFIG" --init "$FCSTDATE"
+python3 "$ROOT_DIR/runners/cli.py" --system subx --config "$CONFIG" --init "$FCSTDATE"

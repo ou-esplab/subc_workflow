@@ -18,7 +18,7 @@ This document explains how to run the full SubX weekly forecast workflow from a 
 
 Before running this workflow, ensure:
 
-1. Local realtime and hindcast data roots in [config.yaml](config.yaml) point to valid SubX archive locations.
+1. Local realtime and hindcast data roots in [config.yaml](../config.yaml) point to valid SubX archive locations.
 2. The workflow environment is installed.
 3. PyCPT/CPT dependencies are available if you plan to run the `pycpt` stage.
 
@@ -54,7 +54,7 @@ Legacy wrapper:
 ./subx_pipeline.sh 20260305 config.yaml
 ```
 
-The shell wrapper is only for environment activation and delegation. The canonical implementation is in [runners/cli.py](runners/cli.py).
+The shell wrapper is only for environment activation and delegation. The canonical implementation is in [runners/cli.py](../runners/cli.py).
 
 ---
 
@@ -128,15 +128,15 @@ python3 runners/cli.py --system subx --config config.yaml --init 20260305 --stag
 ### `arraylake`
 
 - Appends new realtime start dates into existing Arraylake groups.
-- Script entrypoint: [run_addvars_rt.sh](run_addvars_rt.sh) -> [addvars_rt.py](addvars_rt.py).
-- Only runs when `arraylake.enabled: true` in [config.yaml](config.yaml).
+- Script entrypoint: [arraylake/run_addvars_rt.sh](../arraylake/run_addvars_rt.sh) -> [arraylake/addvars_rt.py](../arraylake/addvars_rt.py).
+- Only runs when `arraylake.enabled: true` in [config.yaml](../config.yaml).
 - Uses `ARRAYLAKE_TOKEN` environment variable if provided; otherwise uses the default client auth flow.
 
 ---
 
 ## Exceedance Behavior
 
-Exceedance configuration is controlled under `exceedance` in [config.yaml](config.yaml).
+Exceedance configuration is controlled under `exceedance` in [config.yaml](../config.yaml).
 
 Important behavior:
 
@@ -161,7 +161,7 @@ exceedance:
 
 ## Validation and Smoke Modes
 
-Validation is performed by [validate_realtime.py](validate_realtime.py) before forecast generation.
+Validation is performed by [preprocess/validate_realtime.py](../preprocess/validate_realtime.py) before forecast generation.
 
 Products smoke mode can be enabled when you want the stage to finish without realtime model inputs:
 
@@ -215,7 +215,7 @@ pycpt:
 
 ## PyCPT Model Selection
 
-You can configure PyCPT predictor models directly in [config.yaml](config.yaml):
+You can configure PyCPT predictor models directly in [config.yaml](../config.yaml):
 
 ```yaml
 pycpt:

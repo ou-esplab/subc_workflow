@@ -6,6 +6,10 @@ export PYTHONUNBUFFERED=1
 PS4='+ $(date "+%F %T") pycpt_run.sh: '
 set -x
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+cd "$ROOT_DIR"
+
 FCSTDATE="${1:-}"
 CONFIG_IN="${2:-config.yaml}"
 CONFIG="$(python3 -c 'import os,sys; print(os.path.abspath(sys.argv[1]))' "$CONFIG_IN")"
@@ -129,7 +133,7 @@ run_region() {
   fi
   echo "==> [pycpt_run] Running PyCPT for region '$REG' (LATS=$LATS LONS=$LONS SEAS=$SEAS)"
   local -a cmd=(
-    python ./pycpt_s2s_realtime.py
+    python "$SCRIPT_DIR/pycpt_s2s_realtime.py"
     --regname "$REG"
     --lat_minmax $LATS
     --lon_minmax $LONS

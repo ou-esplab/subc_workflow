@@ -25,8 +25,8 @@ Outputs and logs are written under `logs/YYYYMMDD_HHMMSS/subx/<init>/`.
 
 ## Documentation
 
-- User/operator run instructions: [README_user_run_guide.md](README_user_run_guide.md)
-- Workflow design and architecture: [README_design_documentation.md](README_design_documentation.md)
+- User/operator run instructions: [docs/README_user_run_guide.md](docs/README_user_run_guide.md)
+- Workflow design and architecture: [docs/README_design_documentation.md](docs/README_design_documentation.md)
 
 ## Current Notes
 
@@ -40,4 +40,4 @@ Outputs and logs are written under `logs/YYYYMMDD_HHMMSS/subx/<init>/`.
 
 ## Diagnostics
 
-- Diagnostic utilities and ad hoc debug workflows are documented in [DIAGNOSTICS.md](DIAGNOSTICS.md).
+- Diagnostic utilities and ad hoc debug workflows are documented in [docs/DIAGNOSTICS.md](docs/DIAGNOSTICS.md).

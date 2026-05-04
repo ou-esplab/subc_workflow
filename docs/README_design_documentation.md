@@ -28,7 +28,7 @@ Legacy wrapper:
 
 - `./subx_pipeline.sh YYYYMMDD config.yaml`
 
-The shell wrapper delegates to [runners/cli.py](runners/cli.py) and is not the authoritative implementation.
+The shell wrapper delegates to [runners/cli.py](../runners/cli.py) and is not the authoritative implementation.
 
 ---
 
@@ -54,7 +54,7 @@ The shell wrapper delegates to [runners/cli.py](runners/cli.py) and is not the a
 
 ## Validation Design
 
-- [validate_realtime.py](validate_realtime.py) performs preflight checks before products are built.
+- [preprocess/validate_realtime.py](../preprocess/validate_realtime.py) performs preflight checks before products are built.
 - Validation is configuration-driven by model list, variables, and expected file layout.
 - The validation stage writes manifests into the run output directory.
 - `validation.policy` determines whether missing inputs are fatal.
@@ -63,7 +63,7 @@ The shell wrapper delegates to [runners/cli.py](runners/cli.py) and is not the a
 
 ## Products Design
 
-Weekly product generation is implemented in [forecast.py](forecast.py).
+Weekly product generation is implemented in [products/forecast.py](../products/forecast.py).
 
 Core behavior:
 
@@ -84,7 +84,7 @@ Outputs include:
 
 ## Exceedance Design
 
-Shared exceedance utilities live in [utils/subc_pycpt_utils.py](utils/subc_pycpt_utils.py).
+Shared exceedance utilities live in [utils/subc_pycpt_utils.py](../utils/subc_pycpt_utils.py).
 
 Design intent:
 
@@ -105,7 +105,7 @@ Threshold selection behavior:
 
 ## PyCPT Design
 
-PyCPT execution is orchestrated through the runner and shell bridge, with implementation centered in [pycpt_s2s_realtime.py](pycpt_s2s_realtime.py) and shared helpers.
+PyCPT execution is orchestrated through the runner and shell bridge, with implementation centered in [postprocess/pycpt_s2s_realtime.py](../postprocess/pycpt_s2s_realtime.py) and shared helpers.
 
 Supported modes:
 
@@ -121,11 +121,11 @@ Model selection precedence is explicit and shared between configuration and CLI.
 
 ## Arraylake Design
 
-Arraylake append execution is orchestrated through the runner stage `arraylake` and implemented by [run_addvars_rt.sh](run_addvars_rt.sh) and [addvars_rt.py](addvars_rt.py).
+Arraylake append execution is orchestrated through the runner stage `arraylake` and implemented by [arraylake/run_addvars_rt.sh](../arraylake/run_addvars_rt.sh) and [arraylake/addvars_rt.py](../arraylake/addvars_rt.py).
 
 Design intent:
 
-- Keep Arraylake integration optional and configuration-driven via `arraylake.enabled` in [config.yaml](config.yaml).
+- Keep Arraylake integration optional and configuration-driven via `arraylake.enabled` in [config.yaml](../config.yaml).
 - Use workflow model configuration as the source of truth for group/model iteration.
 - Append only new start dates (`S`) to existing repository groups.
 - Avoid hard failures for missing model-variable files by skipping unavailable inputs.
@@ -141,13 +141,13 @@ The `publish` stage is responsible for syncing final workflow outputs for downst
 
 ## Code Organization
 
-- [runners/cli.py](runners/cli.py): canonical workflow runner
-- [forecast.py](forecast.py): weekly products and exceedance generation
-- [validate_realtime.py](validate_realtime.py): preflight validation
-- [pycpt_s2s_realtime.py](pycpt_s2s_realtime.py): regional PyCPT execution
-- [utils/subc_pycpt_utils.py](utils/subc_pycpt_utils.py): shared date, exceedance, plotting, and xarray helpers
-- [utils/split_percentiles_by_mmdd.py](utils/split_percentiles_by_mmdd.py): threshold file splitter utility
-- [utils/exceedance_diag.py](utils/exceedance_diag.py): dimensional and threshold-selection diagnostics
+- [runners/cli.py](../runners/cli.py): canonical workflow runner
+- [products/forecast.py](../products/forecast.py): weekly products and exceedance generation
+- [preprocess/validate_realtime.py](../preprocess/validate_realtime.py): preflight validation
+- [postprocess/pycpt_s2s_realtime.py](../postprocess/pycpt_s2s_realtime.py): regional PyCPT execution
+- [utils/subc_pycpt_utils.py](../utils/subc_pycpt_utils.py): shared date, exceedance, plotting, and xarray helpers
+- [utils/split_percentiles_by_mmdd.py](../utils/split_percentiles_by_mmdd.py): threshold file splitter utility
+- [utils/exceedance_diag.py](../utils/exceedance_diag.py): dimensional and threshold-selection diagnostics
 
 ---
 
