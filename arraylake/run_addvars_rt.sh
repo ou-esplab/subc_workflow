@@ -76,6 +76,9 @@ CMD=(python3 "$SCRIPT_DIR/update_arraylake_fcsts.py" --config "$CONFIG")
 if [[ -n "${FCSTDATE:-}" ]]; then
   CMD+=(--date "$FCSTDATE")
 fi
+if [[ "${ARRAYLAKE_DRY_RUN:-0}" == "1" ]]; then
+  CMD+=(--dry-run)
+fi
 
 "${CMD[@]}"
 

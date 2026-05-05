@@ -69,6 +69,34 @@ class CliWorkflowTests(unittest.TestCase):
             self.assertEqual(exit_code, 0)
             self.assertEqual([Path(call[0][0]).name for call in calls], ["make_fcsts.sh", "pycpt_run.sh"])
 
+    def test_arraylake_dry_run_sets_stage_env(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config_path = Path(tmpdir) / "config.yaml"
+            config_path.write_text("{}\n", encoding="utf-8")
+            calls = []
+
+            def fake_run_cmd(command, log_path, extra_env=None):
+                calls.append((command, log_path, extra_env or {}))
+                return log_path
+
+            with mock.patch.object(cli, "run_cmd", side_effect=fake_run_cmd):
+                with mock.patch("sys.argv", [
+                    "cli.py",
+                    "--system",
+                    "subx",
+                    "--config",
+                    str(config_path),
+                    "--stages",
+                    "arraylake",
+                    "--arraylake-dry-run",
+                ]):
+                    exit_code = cli.main()
+
+            self.assertEqual(exit_code, 0)
+            self.assertEqual(len(calls), 1)
+            self.assertEqual(Path(calls[0][0][0]).name, "run_addvars_rt.sh")
+            self.assertEqual(calls[0][2].get("ARRAYLAKE_DRY_RUN"), "1")
+
 
 if __name__ == "__main__":
     unittest.main()

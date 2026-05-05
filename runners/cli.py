@@ -57,6 +57,8 @@ def main():
                     help="SubX only: override PyCPT model group (e.g., EMC-GEFSv12_CPC NCEP-CFSv2)")
     ap.add_argument("--pycpt-dry-run", action="store_true",
                     help="SubX only: run PyCPT in smoke mode (data prep only)")
+    ap.add_argument("--arraylake-dry-run", action="store_true",
+                    help="SubX only: scan ArrayLake inputs and report pending updates without writing")
     args = ap.parse_args()
 
     config_path = os.path.abspath(args.config)
@@ -95,7 +97,9 @@ def main():
             "publish": {
                 "SUBX_PUBLISH_SUBDIR": args.publish_subdir,
             },
-            "arraylake": {},
+            "arraylake": {
+                "ARRAYLAKE_DRY_RUN": "1" if args.arraylake_dry_run else None,
+            },
         }
     elif system == "nmme":
         # products expects YYYYMM; normalize if init like YYYYMMDD

@@ -29,6 +29,7 @@ OPTIONS:
   --publish-dry-run            Publish without SSH/SCP side effects
   --products-dry-run           Products stage without writing output
   --pycpt-dry-run              PyCPT without running CPT.x
+    --arraylake-dry-run          ArrayLake scans and reports without writing
   --cron                       Cron mode: uses flock, suppresses stderr if already running
   --help                       Show this message
 
@@ -115,7 +116,7 @@ main() {
                 cron_mode=true
                 shift
                 ;;
-            --publish|--publish-dry-run|--products-dry-run|--pycpt-dry-run)
+            --publish|--publish-dry-run|--products-dry-run|--pycpt-dry-run|--arraylake-dry-run)
                 extra_args+=("$1")
                 shift
                 ;;

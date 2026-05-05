@@ -15,10 +15,15 @@ import os
 import time
 import traceback
 import glob
-from tqdm import tqdm
 from arraylake import Client
 import logging
 import yaml
+
+try:
+    from tqdm import tqdm
+except ImportError:
+    def tqdm(iterable, **kwargs):
+        return iterable
 
 # Supress FutureWarnings from xarray and zarr for cleaner logs
 import warnings
@@ -42,6 +47,7 @@ def _build_runtime_config() -> dict:
     parser = argparse.ArgumentParser(description='Update ArrayLake SubX forecasts')
     parser.add_argument('--config', required=True, help='Path to workflow config.yaml')
     parser.add_argument('--date', default=None, help='Optional target init date YYYYMMDD')
+    parser.add_argument('--dry-run', action='store_true', help='Scan and report pending updates without writing')
     args = parser.parse_args()
 
     with open(args.config, encoding='utf-8') as f:
@@ -74,6 +80,7 @@ def _build_runtime_config() -> dict:
         'variables': al_cfg.get('variables') or ['pr', 'tas', 'rlut', 'ts', 'ua', 'va', 'zg'],
         'models': models,
         'date_filter': date_arg,
+        'dry_run': bool(args.dry_run or os.environ.get('ARRAYLAKE_DRY_RUN') == '1'),
         'config_path': os.path.abspath(args.config),
     }
     if not runtime['input_path']:
@@ -106,6 +113,7 @@ input_path = str(runtime['input_path']).rstrip('/')
 datatype = runtime['datatype']
 branch_name = runtime['branch_name']
 target_date = runtime['date_filter']
+dry_run = runtime['dry_run']
 cfg_variables = list(runtime['variables'])
 
 # Build model list from workflow config so this stage stays in sync with config.yaml.
@@ -120,6 +128,8 @@ for model in runtime['models']:
 logger.info(f"Config: {runtime['config_path']}")
 if target_date:
     logger.info(f"Date filter enabled: {target_date}")
+if dry_run:
+    logger.info("Dry-run enabled: no ArrayLake writes or commits will be performed")
 
 ### Instantiate and authenticate the Arraylake client
 # Try to,
@@ -179,8 +189,13 @@ for subx_model in models_to_process:
             branches = repo.list_branches()
             logger.info(f"Existing branches: {branches}")
             
+            if dry_run:
+                if branch_name not in branches:
+                    logger.info(f"[DRY RUN] Would create branch '{branch_name}' from main")
+                else:
+                    logger.info(f"[DRY RUN] Would reuse existing branch '{branch_name}'")
             # If the branch for this datatype does not exist
-            if branch_name not in branches:
+            elif branch_name not in branches:
                 # Create the branch from main and log success
                 logger.info(f"Creating branch '{branch_name}'...")
                 main_session = repo.readonly_session("main")
@@ -512,6 +527,8 @@ for subx_model in models_to_process:
             # Log the missing variables and the number of new start times that will be appended to the repository
             logger.info(f"Missing variables: {missing_vars}")
             logger.info(f"Number of new start times: {len(missing_times)}")
+            if dry_run:
+                logger.info(f"[DRY RUN] Would update {group_name} with {len(missing_vars)} missing variable(s) and {len(missing_times)} new start time(s)")
         
         # If any exception occurs during the comparison of variables and times,
         except Exception as e:
@@ -525,6 +542,18 @@ for subx_model in models_to_process:
         # Log that the writing/appending step is beginning
         logger.info("")
         logger.info("STEP 6: Writing to repository...")
+
+        if dry_run:
+            if not group_exists:
+                logger.info(f"[DRY RUN] Would create new group {group_name}")
+            if missing_vars and len(existing_times) > 0:
+                logger.info(f"[DRY RUN] Would add missing variables for existing times: {missing_vars}")
+            if len(missing_times) > 0 and len(existing_times) > 0:
+                logger.info(f"[DRY RUN] Would append {len(missing_times)} new start time(s)")
+            if len(missing_times) == 0 and not missing_vars and group_exists:
+                logger.info("[DRY RUN] No repo changes would be made")
+            model_results.append((this_model, True, "Dry run: no writes performed"))
+            continue
         
         # Try to,
         try:

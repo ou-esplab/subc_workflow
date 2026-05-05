@@ -95,7 +95,7 @@ concurrency:
   downloads: 3
 
 arraylake:
-  enabled: false
+  enabled: true
   repo: ou-subc/subc-forecasts
   branch: main
   input_root: /data/esplab/subc-backup
