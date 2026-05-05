@@ -61,7 +61,18 @@ set -u
 echo "==> [run_addvars_rt] python=$(command -v python3)"
 python3 -V || true
 
-CMD=(python3 "$SCRIPT_DIR/addvars_rt.py" --config "$CONFIG")
+ENV_FILE="$SCRIPT_DIR/.env"
+if [[ -f "$ENV_FILE" ]]; then
+  # Load key=value pairs from arraylake/.env, including ARRAYLAKE_TOKEN.
+  set -a
+  # shellcheck disable=SC1090
+  source "$ENV_FILE"
+  set +a
+else
+  echo "[WARN] .env not found at $ENV_FILE; proceeding with existing environment" >&2
+fi
+
+CMD=(python3 "$SCRIPT_DIR/update_arraylake_fcsts.py" --config "$CONFIG")
 if [[ -n "${FCSTDATE:-}" ]]; then
   CMD+=(--date "$FCSTDATE")
 fi

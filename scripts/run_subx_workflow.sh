@@ -23,7 +23,7 @@ Usage: ./scripts/run_subx_workflow.sh [OPTIONS]
 
 OPTIONS:
   --init YYYYMMDD              Forecast init date (required)
-  --stages STAGE [STAGE...]    Stages to run (default: ingest preprocess products pycpt arraylake publish)
+    --stages STAGE [STAGE...]    Stages to run (default: ingest arraylake preprocess products pycpt publish)
                                Available: ingest, preprocess, products, pycpt, arraylake, publish
   --publish                    Include publish stage
   --publish-dry-run            Publish without SSH/SCP side effects
@@ -40,7 +40,7 @@ EXAMPLES (CLI):
   ./scripts/run_subx_workflow.sh --init 20260501 --stages products --products-dry-run
 
   # Full pipeline with publish
-  ./scripts/run_subx_workflow.sh --init 20260501 --stages ingest preprocess products pycpt publish
+    ./scripts/run_subx_workflow.sh --init 20260501 --stages ingest arraylake preprocess products pycpt publish
 
 EXAMPLES (CRON):
   # In crontab, run every Thursday at 18:00 UTC:

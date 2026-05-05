@@ -15,6 +15,7 @@ scratch/
 
 # Optional local env files
 .env
+arraylake/.env
 .venv/
 .venv_py310/
 venv/

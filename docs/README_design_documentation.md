@@ -9,13 +9,13 @@ This document describes the architecture and design intent of the SubX workflow.
 ```text
 Realtime SubX Inputs
    ↓
+Arraylake Append (Optional)
+   ↓
 Validation
    ↓
 Weekly Products and Exceedance
    ↓
 Regional PyCPT Post-Processing
-   ↓
-Arraylake Append (Optional)
    ↓
 Publish
 ```
@@ -121,7 +121,7 @@ Model selection precedence is explicit and shared between configuration and CLI.
 
 ## Arraylake Design
 
-Arraylake append execution is orchestrated through the runner stage `arraylake` and implemented by [arraylake/run_addvars_rt.sh](../arraylake/run_addvars_rt.sh) and [arraylake/addvars_rt.py](../arraylake/addvars_rt.py).
+Arraylake append execution is orchestrated through the runner stage `arraylake` and implemented by [arraylake/run_addvars_rt.sh](../arraylake/run_addvars_rt.sh) and [arraylake/update_arraylake_fcsts.py](../arraylake/update_arraylake_fcsts.py).
 
 Design intent:
 
@@ -129,7 +129,8 @@ Design intent:
 - Use workflow model configuration as the source of truth for group/model iteration.
 - Append only new start dates (`S`) to existing repository groups.
 - Avoid hard failures for missing model-variable files by skipping unavailable inputs.
-- Prefer runtime authentication through `ARRAYLAKE_TOKEN` over hard-coded credentials.
+- Load `ARRAYLAKE_TOKEN` from `arraylake/.env` at runtime.
+- Keep Arraylake as a sink stage; downstream stages do not read Arraylake outputs.
 
 ---
 

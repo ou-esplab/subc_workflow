@@ -7,7 +7,7 @@
 # Optional overrides via environment variables:
 #   SUBX_CONFIG   — path to config YAML (default: config.yaml next to this script)
 #   SUBX_INIT     — override forecast init date as YYYYMMDD (default: latest Thursday)
-#   SUBX_STAGES   — space-separated stage list (default: "ingest products pycpt arraylake publish")
+#   SUBX_STAGES   — space-separated stage list (default: "ingest arraylake products pycpt publish")
 #   CONDA_BASE    — path to miniconda/anaconda root (default: ~/miniconda3)
 #   ENV_NAME      — conda environment name (default: subc_workflow_env)
 
@@ -20,7 +20,7 @@ cd "$ROOT_DIR"
 
 # ---- Configuration ----------------------------------------------------------
 CONFIG="${SUBX_CONFIG:-$ROOT_DIR/config.yaml}"
-STAGES="${SUBX_STAGES:-ingest products pycpt arraylake publish}"
+STAGES="${SUBX_STAGES:-ingest arraylake products pycpt publish}"
 CONDA_BASE="${CONDA_BASE:-$HOME/miniconda3}"
 ENV_NAME="${ENV_NAME:-subc_workflow_env}"
 LOCK_FILE="/tmp/subx_cron.lock"

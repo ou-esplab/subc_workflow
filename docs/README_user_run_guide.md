@@ -46,7 +46,7 @@ Preferred command:
 python3 runners/cli.py --system subx --config config.yaml --init 20260305
 ```
 
-This runs the default end-to-end pipeline stages: `ingest`, `products`, `pycpt`, `arraylake`, and `publish`.
+This runs the default end-to-end pipeline stages: `ingest`, `arraylake`, `preprocess`, `products`, `pycpt`, and `publish`.
 
 Legacy wrapper:
 
@@ -66,10 +66,10 @@ Run only the products stage:
 python3 runners/cli.py --system subx --config config.yaml --init 20260305 --stages products
 ```
 
-Run Arraylake append stage (after products):
+Run Arraylake append stage directly after ingest:
 
 ```bash
-python3 runners/cli.py --system subx --config config.yaml --init 20260305 --stages products arraylake
+python3 runners/cli.py --system subx --config config.yaml --init 20260305 --stages ingest arraylake
 ```
 
 Dry-run the products stage:
@@ -128,9 +128,10 @@ python3 runners/cli.py --system subx --config config.yaml --init 20260305 --stag
 ### `arraylake`
 
 - Appends new realtime start dates into existing Arraylake groups.
-- Script entrypoint: [arraylake/run_addvars_rt.sh](../arraylake/run_addvars_rt.sh) -> [arraylake/addvars_rt.py](../arraylake/addvars_rt.py).
+- Script entrypoint: [arraylake/run_addvars_rt.sh](../arraylake/run_addvars_rt.sh) -> [arraylake/update_arraylake_fcsts.py](../arraylake/update_arraylake_fcsts.py).
 - Only runs when `arraylake.enabled: true` in [config.yaml](../config.yaml).
-- Uses `ARRAYLAKE_TOKEN` environment variable if provided; otherwise uses the default client auth flow.
+- Loads `ARRAYLAKE_TOKEN` from [arraylake/.env](../arraylake/.env) when present.
+- No downstream stage (`preprocess`, `products`, `pycpt`, `publish`) depends on Arraylake outputs.
 
 ---
 

@@ -41,8 +41,8 @@ def main():
     ap.add_argument("--config", required=True, help="YAML config file")
     ap.add_argument("--init", default=None, help="Init date: SubX=YYYYMMDD, NMME=YYYYMM or YYYYMMDD")
     ap.add_argument("--system", required=True, help="subx|nmme")
-    ap.add_argument("--stages", nargs="*", default=["ingest","preprocess","products","pycpt","arraylake","publish"],
-                    help="Stages to run in order: ingest preprocess products pycpt arraylake publish")
+    ap.add_argument("--stages", nargs="*", default=["ingest","arraylake","preprocess","products","pycpt","publish"],
+                    help="Stages to run in order: ingest arraylake preprocess products pycpt publish")
     ap.add_argument("--publish-subdir", default=None,
                     help="SubX only: optional destination subdir under date, e.g., test")
     ap.add_argument("--products-dry-run", action="store_true",
