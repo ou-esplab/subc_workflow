@@ -129,6 +129,7 @@ python3 runners/cli.py --system subx --config config.yaml --init 20260305 --stag
 
 - Appends new realtime start dates into existing Arraylake groups.
 - Script entrypoint: [arraylake/run_addvars_rt.sh](../arraylake/run_addvars_rt.sh) -> [arraylake/update_arraylake_fcsts.py](../arraylake/update_arraylake_fcsts.py).
+- Legacy note: [arraylake/addvars_rt.py](../arraylake/addvars_rt.py) is retained only as a deprecated reference and is not part of the live workflow path.
 - Only runs when `arraylake.enabled: true` in [config.yaml](../config.yaml).
 - Loads `ARRAYLAKE_TOKEN` from [arraylake/.env](../arraylake/.env) when present.
 - No downstream stage (`preprocess`, `products`, `pycpt`, `publish`) depends on Arraylake outputs.

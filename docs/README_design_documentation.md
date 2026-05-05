@@ -123,6 +123,8 @@ Model selection precedence is explicit and shared between configuration and CLI.
 
 Arraylake append execution is orchestrated through the runner stage `arraylake` and implemented by [arraylake/run_addvars_rt.sh](../arraylake/run_addvars_rt.sh) and [arraylake/update_arraylake_fcsts.py](../arraylake/update_arraylake_fcsts.py).
 
+[arraylake/addvars_rt.py](../arraylake/addvars_rt.py) is retained only as a deprecated legacy reference and is not invoked by the current workflow runner.
+
 Design intent:
 
 - Keep Arraylake integration optional and configuration-driven via `arraylake.enabled` in [config.yaml](../config.yaml).
