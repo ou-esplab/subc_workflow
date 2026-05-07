@@ -9,7 +9,7 @@ def main(dataset_url):
         print(e)
         sys.exit(1)
 
-    dims = ds.dims
+    dims = ds.sizes
     coords = ds.coords
 
     # Print dimension sizes needed for size estimate
