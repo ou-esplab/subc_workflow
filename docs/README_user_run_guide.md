@@ -19,21 +19,34 @@ This document explains how to run the full SubX weekly forecast workflow from a 
 Before running this workflow, ensure:
 
 1. Local realtime and hindcast data roots in [config.yaml](../config.yaml) point to valid SubX archive locations.
-2. The workflow environment is installed.
-3. PyCPT/CPT dependencies are available if you plan to run the `pycpt` stage.
+2. Both conda environments are installed (see below).
 
-Recommended environment setup:
+### Two-Environment Setup
+
+This workflow uses two separate conda environments:
+
+| Environment | File | Used by |
+|---|---|---|
+| `subc_workflow_env` | [environment.yml](../environment.yml) | All stages except `pycpt` |
+| `subc_pycpt_2_8_2` | [environment.pycpt-2.8.2.yml](../environment.pycpt-2.8.2.yml) | `pycpt` stage only |
+
+Create both:
 
 ```bash
 conda env create -f environment.yml
-conda activate subc_workflow_env
+conda env create -f environment.pycpt-2.8.2.yml
 ```
 
-Verify the environment if you will run PyCPT:
+Verify the main environment:
 
 ```bash
-which CPT.x
-python -c "import cptcore, cptio; print('ok')"
+conda run -n subc_workflow_env python -c "import xarray, pandas, yaml; print('ok')"
+```
+
+Verify the PyCPT environment:
+
+```bash
+conda run -n subc_pycpt_2_8_2 python -c "import pycpt, cptcore, cptio; print('ok')"
 ```
 
 ---

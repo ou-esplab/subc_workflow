@@ -73,11 +73,15 @@ def main():
     os.makedirs(logdir, exist_ok=True)
 
     if system == "subx":
+        pycpt_env = os.environ.get("SUBC_PYCPT_ENV", "").strip()
+        pycpt_cmd = [str(ROOT_DIR / "postprocess" / "pycpt_run.sh"), init, config_path]
+        if pycpt_env:
+            pycpt_cmd = ["conda", "run", "--no-capture-output", "-n", pycpt_env] + pycpt_cmd
         stage_cmds = {
             "ingest":     [str(ROOT_DIR / "ingest" / "update_subx_fcsts.sh"), init, config_path],
             "preprocess": [str(ROOT_DIR / "preprocess" / "run_preprocess.sh"), init, config_path],
             "products":   [str(ROOT_DIR / "products" / "make_fcsts.sh"), init, config_path],
-            "pycpt":      [str(ROOT_DIR / "postprocess" / "pycpt_run.sh"), init, config_path],
+            "pycpt":      pycpt_cmd,
             "arraylake":  [str(ROOT_DIR / "arraylake" / "run_addvars_rt.sh"), init, config_path],
             "publish":    [str(ROOT_DIR / "publish" / "publish_subx_web.sh"), init, config_path],
         }

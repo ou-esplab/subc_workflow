@@ -2,14 +2,26 @@
 
 ## Environment Setup
 
-Create the workflow environment with:
+This workflow uses two conda environments:
+
+| Environment | File | Purpose |
+|---|---|---|
+| `subc_workflow_env` | [environment.yml](environment.yml) | All stages except `pycpt` |
+| `subc_pycpt_2_8_2` | [environment.pycpt-2.8.2.yml](environment.pycpt-2.8.2.yml) | `pycpt` stage only |
+
+Create both environments:
 
 ```bash
 conda env create -f environment.yml
-conda activate subc_workflow_env
+conda env create -f environment.pycpt-2.8.2.yml
 ```
 
-The environment spec in [environment.yml](environment.yml) is based on the working `nmme_workflow_env` package set and pins the key PyCPT and analysis dependencies used by this workflow.
+To update an existing environment after changes to its file:
+
+```bash
+conda env update --name subc_workflow_env --file environment.yml --prune --solver libmamba
+conda env update --name subc_pycpt_2_8_2 --file environment.pycpt-2.8.2.yml --prune --solver libmamba
+```
 
 ## Run (using unified runner)
 

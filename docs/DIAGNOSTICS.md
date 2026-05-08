@@ -14,17 +14,33 @@ This document tracks diagnostic utilities and how to run ad hoc checks safely.
 
 ## Typical Commands
 
-Run exceedance diagnostics:
+Run exceedance diagnostics (main env):
 
 ```bash
-PYTHONPATH=. ~/miniconda3/bin/conda run -n subc_workflow_env \
+PYTHONPATH=. conda run -n subc_workflow_env \
   python utils/exceedance_diag.py > logs/scratch/exceedance_diag.log 2>&1
 ```
 
-Run full workflow regression for a known date:
+Run non-PyCPT stage regression for a known date (main env):
 
 ```bash
-PYTHONPATH=. ~/miniconda3/bin/conda run -n subc_workflow_env \
+PYTHONPATH=. conda run -n subc_workflow_env \
+  python runners/cli.py --system subx --config config.yaml --init 20260305 \
+  --stages ingest products > logs/scratch/regression_20260305.log 2>&1
+```
+
+Run the full pipeline including `pycpt` (both envs, via runner):
+
+```bash
+# The runner dispatches the pycpt stage through SUBC_PYCPT_ENV automatically.
+SUBC_PYCPT_ENV=subc_pycpt_2_8_2 conda run -n subc_workflow_env \
   python runners/cli.py --system subx --config config.yaml --init 20260305 \
   --stages ingest products pycpt > logs/scratch/regression_full_20260305.log 2>&1
+```
+
+Run PyCPT standalone (pycpt env):
+
+```bash
+conda run -n subc_pycpt_2_8_2 \
+  python -c "import pycpt, cptcore, cptio; print('ok')"
 ```

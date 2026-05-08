@@ -8,7 +8,10 @@ set -euo pipefail
 WORKFLOW_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 LOCKFILE="${WORKFLOW_DIR}/.subx.lock"
 CONFIG="${WORKFLOW_DIR}/config.yaml"
-CONDA_ENV="subc_workflow_env"
+# Main workflow environment (ingest, arraylake, preprocess, products, publish).
+SUBC_MAIN_ENV="${SUBC_MAIN_ENV:-subc_workflow_env}"
+# PyCPT environment used only for the pycpt stage.
+export SUBC_PYCPT_ENV="${SUBC_PYCPT_ENV:-subc_pycpt_2_8_2}"
 
 # Logging
 LOGS_DIR="${WORKFLOW_DIR}/logs"
@@ -65,7 +68,7 @@ run_workflow() {
 
     # Build the runner command
     local cmd=(
-        "conda" "run" "-n" "${CONDA_ENV}"
+        "conda" "run" "-n" "${SUBC_MAIN_ENV}"
         "python" "runners/cli.py"
         "--system" "subx"
         "--config" "${CONFIG}"

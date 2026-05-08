@@ -1,16 +1,14 @@
-# Derived from the working nmme_workflow_env package set.
-# This keeps the important top-level workflow dependencies pinned while
-# allowing Conda to solve the rest of the environment.
+# Main workflow environment (ingest, arraylake, preprocess, products, publish).
+# Does NOT include PyCPT/CPT packages — use environment.pycpt-2.8.2.yml for
+# the pycpt stage.
 name: subc_workflow_env
 channels:
   - conda-forge
-  - iri-nextgen
   - defaults
 dependencies:
   - python=3.10.13
   - cartopy=0.22.0
   - cmaps=2.0.1
-  - cptbin=17.8.3
   - dask=2024.2.0
   - distributed=2024.2.0
   - geocat-viz=2025.07.0
@@ -21,7 +19,6 @@ dependencies:
   - netcdf4=1.6.5
   - numpy=1.26.4
   - pandas=2.2.0
-  - pycpt=2.10.4
   - pyproj=3.6.1
   - pyyaml=6.0.1
   - pytest=9.0.2
@@ -29,4 +26,9 @@ dependencies:
   - scikit-learn=1.4.1.post1
   - scipy=1.12.0
   - shapely=2.0.3
+  - tqdm
+  - wget
   - xarray=2024.2.0
+  - pip
+  - pip:
+      - arraylake

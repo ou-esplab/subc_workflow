@@ -1,0 +1,36 @@
+# PyCPT 2.8.x environment for the pycpt stage only.
+# Derived from the working nmme_workflow pycpt-2.8.2 frozen reference env.
+# Pin the full CPT stack explicitly so the solver does not silently upgrade it.
+# Activate with: conda activate subc_pycpt_2_8_2
+# Or run a single command with: conda run -n subc_pycpt_2_8_2 ...
+name: subc_pycpt_2_8_2
+channels:
+  - conda-forge
+  - iri-nextgen
+  - defaults
+dependencies:
+  - python=3.10.13
+  - cartopy=0.22.0
+  - cmaps=2.0.1
+  - cptbin=17.8.3
+  - cptcore=2.2.0
+  - cptdl=1.1.5
+  - cptextras=1.2.0
+  - cptio=1.2.0
+  - dask=2024.2.0
+  - distributed=2024.2.0
+  - geocat-viz=2025.07.0
+  - matplotlib=3.7.1
+  - metpy=1.7.1
+  - netcdf4=1.6.5
+  - numpy=1.26.4
+  - pandas=2.2.0
+  - pycpt=2.8.1
+  - pyproj=3.6.1
+  - pyyaml=6.0.1
+  - requests=2.31.0
+  - scipy=1.12.0
+  - shapely=2.0.3
+  - tqdm
+  - wget
+  - xarray=2024.2.0
