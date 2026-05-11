@@ -18,6 +18,7 @@ import glob
 from arraylake import Client
 import logging
 import yaml
+import dask
 
 try:
     from tqdm import tqdm
@@ -28,6 +29,8 @@ except ImportError:
 # Supress FutureWarnings from xarray and zarr for cleaner logs
 import warnings
 warnings.filterwarnings("ignore", category=FutureWarning)
+# Prevent dask from materializing oversized arrays during slicing operations.
+dask.config.set({"array.slicing.split_large_chunks": True})
 
 def _load_token_from_env_file(env_file: Path) -> str | None:
     if not env_file.exists():
@@ -268,14 +271,15 @@ for subx_model in models_to_process:
             max_existing_time = existing_times.max()
             # Convert the most recent start time to a string for filtering
             max_date_str = pd.Timestamp(max_existing_time).strftime('%Y%m%d')
+            read_all_files = False
             # Log that all variables exist and the files will be filtered based on the most recent start time
             logger.info(f"✓ Section 3 scenario: All variables exist")
             logger.info(f"  Reading files with dates > {max_date_str}")
         # If the group exists but some of the defined variables are missing, or if the group doesn't
         # exist, all files will be read and other scenarios play out as expected
         else:
-            # Set the max date string to a old date to ensure all files are read
-            max_date_str = '00000000'
+            max_date_str = None
+            read_all_files = True
             # Log that some or all variables are missing and all files will be read
             logger.info(f"✓ Section 1/2 scenario: Reading all files")
         
@@ -310,18 +314,22 @@ for subx_model in models_to_process:
                 logger.info(f"  Found {len(files)} total files")
                 total_files_found += len(files)
                 
-                # Filter the files to only read in files with new start times if all variables exist in the repository and 
+                # Filter the files to only read in files with new start times if all variables exist in the repository and
                 # only new times are being appended, or read all files if new variables are being added or if the group doesn't exist
-                files = [f for f in files if f.rsplit('_', 1)[1].split('.')[0] > max_date_str]
-                
+                if max_date_str is not None:
+                    files = [f for f in files if f.rsplit('_', 1)[1].split('.')[0] > max_date_str]
+
                 # Log the number of files remaining after filtering
                 logger.info(f"  After filtering: {len(files)} new files")
 
-                # If a specific workflow init date is provided, keep only that init.
-                if target_date:
-                    files = [f for f in files if f.rsplit('_', 1)[1].split('.')[0] == target_date]
-                    logger.info(f"  After date filter ({target_date}): {len(files)} files")
-                
+                # When backfilling missing variables (read_all_files=True), only load files for dates
+                # that already exist in the repository, to avoid loading unnecessary old data that won't be written.
+                # This drastically reduces memory usage while still providing the backfill data needed.
+                if read_all_files and group_exists:
+                    existing_dates_set = set(pd.Timestamp(t).strftime('%Y%m%d') for t in existing_times)
+                    files = [f for f in files if f.rsplit('_', 1)[1].split('.')[0] in existing_dates_set]
+                    logger.info(f"  Filtered to {len(files)} files matching {len(existing_dates_set)} existing repo dates")
+
                 # If no files remain after filtering,
                 if not files:
                     # Log that there are no new files for this variable and skip to the next variable
@@ -520,8 +528,9 @@ for subx_model in models_to_process:
             # Get all the start times in the merged dataset from qlcs
             all_times = pd.Index(ds_allvars['S'].values)
             
-            # Compare the variables and times in the merged dataset from qlcs to those in the model group to see what is missing
-            missing_vars = [v for v in subx_model['variables'] if v not in existing_vars]
+            # Compare the variables and times in the merged dataset from qlcs to those in the model group to see what is missing.
+            # Only include variables that are both absent from the repo AND present in ds_allvars (i.e. had source files).
+            missing_vars = [v for v in subx_model['variables'] if v not in existing_vars and v in ds_allvars.data_vars]
             missing_times = all_times.difference(existing_times)
             
             # Log the missing variables and the number of new start times that will be appended to the repository
@@ -648,46 +657,80 @@ for subx_model in models_to_process:
                 var_message = f"Adding missing variables {missing_vars} for {len(existing_times)} existing times"
                 logger.info(f"Message: {var_message}")
                 
-                # Subset the merged dataset from qlcs to select the missing variable data for all already existing start times
-                subset_missing_vars = ds_allvars[missing_vars].reindex(S=existing_times)
+                # Subset the merged dataset to select the missing variable data.
+                # Only write times we actually have data for (intersection with existing times),
+                # to avoid expanding to all existing_times when only a single init date was loaded.
+                available_times = ds_allvars['S'].values
+                times_to_write = existing_times[np.isin(existing_times, available_times)]
+
+                if len(times_to_write) == 0:
+                    logger.info("  No overlapping start times for missing variables. Skipping Section 2.")
+                    continue
                 
                 # Start a timer for the appending of the new variables to the model group
                 var_append_start = time.time()
-                
-                ### Rechunk the subsetted missing variables dataset into chunks depending on the data dimensions for writing
-                ### L: Lead time, S: Start time, M: Model member, P: Pressure level, X: Longitude, Y: Latitude
-                
-                ### If the model being uploaded in the NCEP-CFS version 2, chunk by day since there are 4 start times per day
+
+                # Keep the normal multi-variable write path, but use smaller CFSv2 time batches
+                # to avoid materializing too many start times in memory during the append.
+                time_batch_size = 1 if this_model == "CFSv2" else len(times_to_write)
+                write_batches = 0
+
                 if this_model == "CFSv2":
-                    chunks = {'L': len(subset_missing_vars['L']), 'Y': len(subset_missing_vars['Y']), 'X': len(subset_missing_vars['X']), 'M': 1, 'S': 4}
-                    # If pressure is a dimension, chunk by pressure level as well. If it is not, then chunk by member and start time only
-                    if 'P' in subset_missing_vars.dims:
-                        chunks['P'] = 1
-                
-                ### If the model being uploaded is any other than the CFSv2
+                    logger.info("Using CFSv2 missing-variable batching: all vars, S<=1")
                 else:
-                    chunks = {'L': len(subset_missing_vars['L']), 'Y': len(subset_missing_vars['Y']), 'X': len(subset_missing_vars['X']), 'M': 1, 'S': 1}
-                    # If pressure is a dimension, chunk by pressure level as well. If it is not, then chunk by member and start time only
+                    logger.info("Using standard missing-variable append: all vars")
+
+                missing_var_dataset = ds_allvars[missing_vars].sel(S=times_to_write)
+
+                for start_idx in range(0, len(missing_var_dataset['S']), time_batch_size):
+                    end_idx = min(start_idx + time_batch_size, len(missing_var_dataset['S']))
+                    subset_missing_vars = missing_var_dataset.isel(S=slice(start_idx, end_idx))
+
+                    chunks = {
+                        'L': len(subset_missing_vars['L']),
+                        'Y': len(subset_missing_vars['Y']),
+                        'X': len(subset_missing_vars['X']),
+                        'M': 1,
+                        'S': min(time_batch_size, len(subset_missing_vars['S'])) if this_model == "CFSv2" else 1,
+                    }
                     if 'P' in subset_missing_vars.dims:
                         chunks['P'] = 1
-                
-                # Rechunk the dataset with the defined chunking strategy
-                subset_missing_vars = subset_missing_vars.chunk(chunks=chunks)
-                
-                # When appending new variables, clear all metadata and encoding so the dataset can be
-                # written cleanly without any issues of metadata or encoding from the original files
-                for v in subset_missing_vars.data_vars:
-                    subset_missing_vars[v].encoding = {}
-                for coord in subset_missing_vars.coords:
-                    subset_missing_vars[coord].encoding = {}
-                
-                # Append the model group dataset with the new missing variable data from qlcs for all already existing start times
-                subset_missing_vars.to_zarr(write_store, zarr_format=3, consolidated=False, mode="a", group=group_name)
+
+                    subset_missing_vars = subset_missing_vars.chunk(chunks=chunks)
+
+                    for v in subset_missing_vars.data_vars:
+                        subset_missing_vars[v].encoding = {}
+                    for coord in subset_missing_vars.coords:
+                        subset_missing_vars[coord].encoding = {}
+
+                    if this_model == "CFSv2":
+                        subset_missing_vars.to_zarr(
+                            write_store,
+                            zarr_format=3,
+                            consolidated=False,
+                            mode="a",
+                            group=group_name,
+                            append_dim="S",
+                            align_chunks=True,
+                            safe_chunks=False,
+                        )
+                    else:
+                        subset_missing_vars.to_zarr(
+                            write_store,
+                            zarr_format=3,
+                            consolidated=False,
+                            mode="a",
+                            group=group_name,
+                            append_dim="S",
+                        )
+
+                    write_batches += 1
+
                 # Commit the append with the defined message
                 write_session.commit(var_message)
                 
                 # Log that the missing variables were added successfully and how long it took
-                logger.info(f"✓ Missing variables added in {time.time() - var_append_start:.1f} seconds")
+                logger.info(f"✓ Missing variables added in {time.time() - var_append_start:.1f} seconds across {write_batches} write batches")
                 
             # If any exception occurs during the appending of the new variables to the existing model group,
             except Exception as e:

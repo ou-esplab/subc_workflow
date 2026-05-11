@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 # coding: utf-8
 """
-forecast.py – SubX weekly anomalies/MME + generic exceedance
+forecast.py – SubC weekly anomalies/MME + generic exceedance
 
 What this does
 --------------
-1) Loads realtime SubX forecast files for each configured model/variable.
+1) Loads realtime SubC forecast files for each configured model/variable.
 2) For each model, picks the most recent IC within the "forecast week" (Fri–Thu).
 3) Converts ensemble members to an ensemble-mean field and computes anomalies
    against hindcast daily climatology on matching leads.
@@ -214,7 +214,7 @@ def _write_backward_compat_pr_anom_files(ds_save: xr.Dataset, out_data: str, fcs
         out_ds.attrs["units"] = "mmday-1"
         out_ds.attrs["source_file"] = f"subx_mme_anoms_wk_1-4_{fcstdate}.nc"
         out_ds.attrs["description"] = (
-            "Backward-compatible SubX precipitation anomaly product "
+            "Backward-compatible SubC precipitation anomaly product "
             f"({stat_name}) derived from pr_members across ensemble dimension M"
         )
 
@@ -491,7 +491,7 @@ def _plot_weekly_panels(
         )
         valid_week_end = pd.Timestamp(fcstdate) + pd.Timedelta(days=(week * 7 + 1))
         fig.suptitle(
-            f"SubX Week {week} {title_prefix}: Valid week ending {valid_week_end:%b %d, %Y}",
+            f"SubC Week {week} {title_prefix}: Valid week ending {valid_week_end:%b %d, %Y}",
             fontsize=14,
             y=0.985,
         )
@@ -601,7 +601,7 @@ def _plot_weekly_panels(
     )
     valid_34_end = pd.Timestamp(fcstdate) + pd.Timedelta(days=29)
     fig.suptitle(
-        f"SubX Week 3-4 {week34_title_prefix}: {'2-week total' if week34_is_total else '2-week mean'} ending {valid_34_end:%b %d, %Y}",
+        f"SubC Week 3-4 {week34_title_prefix}: {'2-week total' if week34_is_total else '2-week mean'} ending {valid_34_end:%b %d, %Y}",
         fontsize=14,
         y=0.985,
     )
@@ -842,6 +842,7 @@ def _plot_legacy_weekly_products(
     panel_models: list[str],
 ) -> None:
     tas_domains = [
+        ("Global", (-180, 180), (-60, 80)),
         ("NorthAmerica", (-170, -30), (10, 80)),
         ("Iran", (40, 64), (24, 40)),
         ("Mexico", (-118, -97), (20, 33)),
@@ -1094,7 +1095,7 @@ def main():
                     print(f"  - skipping {group}-{chosen_model_name} tas: no finite realtime values")
                     continue
                 tas_median = float(finite_tas.median().values)
-                # Guardrail: SubX tas should be in a physically plausible Kelvin range.
+                # Guardrail: SubC tas should be in a physically plausible Kelvin range.
                 # If values are far outside, skip the model-variable to avoid misleading maps.
                 if tas_median < 180.0 or tas_median > 330.0:
                     print(

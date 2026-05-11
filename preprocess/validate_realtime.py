@@ -13,6 +13,7 @@ import argparse
 import glob
 import json
 import os
+import re
 from dataclasses import asdict, dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -52,7 +53,33 @@ def resolve_local_model(group: str, server_model: str, mapping: dict[str, str]) 
     return mapping.get(f"{group}-{server_model}", mapping.get(server_model, server_model))
 
 
-def iter_records(config: dict, fcstdate: str) -> Iterable[ValidationRecord]:
+def _date_window(fcstdate: str, lookback_days: int) -> set[str]:
+    end = datetime.strptime(fcstdate, "%Y%m%d")
+    days = max(0, lookback_days - 1)
+    return {(end - timedelta(days=offset)).strftime("%Y%m%d") for offset in range(days + 1)}
+
+
+def _newest_match(pattern: str, allowed_dates: set[str]) -> list[str]:
+    # Match the date token in names like var_GROUP-MODEL_YYYYMMDD.daily.nc
+    date_token = re.compile(r"_(\d{8})(?:[^0-9].*)?\.daily\.nc$")
+    candidates: list[tuple[str, str]] = []
+    for path in glob.glob(pattern):
+        match = date_token.search(os.path.basename(path))
+        if not match:
+            continue
+        date_str = match.group(1)
+        if date_str in allowed_dates:
+            candidates.append((date_str, path))
+
+    if not candidates:
+        return []
+
+    # Keep only the newest available file in the lookback window.
+    newest = max(candidates, key=lambda item: item[0])[1]
+    return [newest]
+
+
+def iter_records(config: dict, fcstdate: str, lookback_days: int) -> Iterable[ValidationRecord]:
     rt_root = (config.get("paths") or {}).get("rt_root")
     if not rt_root:
         raise ValueError("config.paths.rt_root is required")
@@ -61,6 +88,8 @@ def iter_records(config: dict, fcstdate: str) -> Iterable[ValidationRecord]:
     models = config.get("models") or []
     if not models:
         raise ValueError("config.models must contain at least one model entry")
+
+    allowed_dates = _date_window(fcstdate, lookback_days)
 
     for model in models:
         group = model["group"]
@@ -72,7 +101,7 @@ def iter_records(config: dict, fcstdate: str) -> Iterable[ValidationRecord]:
                 f"{group}-{local_model}",
                 "forecast",
                 variable,
-                f"{variable}_{group}-{local_model}_{fcstdate}*.daily.nc",
+                f"{variable}_{group}-{local_model}_*.daily.nc",
             )
             yield ValidationRecord(
                 group=group,
@@ -80,7 +109,7 @@ def iter_records(config: dict, fcstdate: str) -> Iterable[ValidationRecord]:
                 local_model=local_model,
                 variable=variable,
                 pattern=pattern,
-                matches=sorted(glob.glob(pattern)),
+                matches=_newest_match(pattern, allowed_dates),
             )
 
 
@@ -131,8 +160,9 @@ def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     config = load_config(args.config)
     fcstdate = args.fcstdate or latest_thursday(config.get("fcstdate"))
+    lookback_days = int(((config.get("validation") or {}).get("lookback_days") or 7))
     policy = ((config.get("validation") or {}).get("policy") or "fail_on_missing").lower()
-    records = list(iter_records(config, fcstdate))
+    records = list(iter_records(config, fcstdate, lookback_days))
     write_manifest(args.outdir, fcstdate, records)
     return validate_records(records, policy)
 

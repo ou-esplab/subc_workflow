@@ -27,17 +27,14 @@ cfg = yaml.safe_load(open(sys.argv[1])) or {}
 al = cfg.get("arraylake") or {}
 
 print(f"ENABLED|{1 if al.get('enabled', False) else 0}")
-print(f"ENV_NAME|{al.get('conda_env', 'arraylake')}")
 PY
 )
 
 AL_ENABLED=0
-AL_ENV_NAME="arraylake"
 for line in "${CFG_LINES[@]}"; do
   IFS='|' read -r key value <<<"$line"
   case "$key" in
     ENABLED) AL_ENABLED="$value" ;;
-    ENV_NAME) AL_ENV_NAME="$value" ;;
   esac
 done
 
@@ -45,18 +42,6 @@ if [[ "$AL_ENABLED" != "1" ]]; then
   echo "==> [run_addvars_rt] arraylake.enabled is false; skipping"
   exit 0
 fi
-
-CONDA_EXE="${CONDA_EXE:-$HOME/miniconda3/bin/conda}"
-if [[ ! -x "$CONDA_EXE" ]]; then
-  echo "[FATAL] conda executable not found at $CONDA_EXE" >&2
-  exit 2
-fi
-
-set +u
-# shellcheck disable=SC1090
-source <("$CONDA_EXE" shell.bash hook)
-conda activate "$AL_ENV_NAME"
-set -u
 
 echo "==> [run_addvars_rt] python=$(command -v python3)"
 python3 -V || true

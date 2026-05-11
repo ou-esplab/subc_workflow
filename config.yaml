@@ -90,6 +90,7 @@ email:
   to: [kpegion@ou.edu]
 validation:
   policy: warn_on_missing  # Use all available data; missing inputs are warnings, not errors
+  lookback_days: 7         # Use newest available realtime file within the last N days
   expect_any_member: true
 concurrency:
   downloads: 3
@@ -99,6 +100,5 @@ arraylake:
   repo: ou-subc/subc-forecasts
   branch: main
   input_root: /data/esplab/subc-backup
-  conda_env: arraylake
   batch_size: 1
   variables: [pr, tas, rlut, ts, ua, va, zg]

@@ -6,7 +6,7 @@ channels:
   - conda-forge
   - defaults
 dependencies:
-  - python=3.10.13
+  - python=3.11
   - cartopy=0.22.0
   - cmaps=2.0.1
   - dask=2024.2.0
@@ -28,7 +28,8 @@ dependencies:
   - shapely=2.0.3
   - tqdm
   - wget
-  - xarray=2024.2.0
+  - xarray>=2024.10.0
+  - icechunk
   - pip
   - pip:
       - arraylake
