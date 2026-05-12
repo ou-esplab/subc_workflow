@@ -154,6 +154,15 @@ python3 runners/cli.py --system subx --config config.yaml --init 20260305 --stag
 - Supports `--arraylake-dry-run` to scan pending updates without writing to ArrayLake.
 - No downstream stage (`preprocess`, `products`, `pycpt`, `publish`) depends on Arraylake outputs.
 
+ArrayLake variable selection behavior:
+
+- Global defaults come from `arraylake.variables`.
+- Per-model overrides come from `models[].vars`.
+- Precedence: `models[].vars` overrides `arraylake.variables` for that model.
+- Validation policy: unknown values in `models[].vars` are warned and skipped.
+- If a model override resolves to no valid variables, that model is skipped with a warning.
+- If `models[].vars` is omitted, the model uses the global `arraylake.variables` list.
+
 ---
 
 ## Exceedance Behavior

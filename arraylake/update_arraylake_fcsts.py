@@ -118,6 +118,7 @@ branch_name = runtime['branch_name']
 target_date = runtime['date_filter']
 dry_run = runtime['dry_run']
 cfg_variables = list(runtime['variables'])
+allowed_variables = set(cfg_variables)
 
 # Build model list from workflow config so this stage stays in sync with config.yaml.
 models_to_process = []
@@ -125,8 +126,50 @@ for model in runtime['models']:
     group = model.get('group')
     name = model.get('name')
     if not group or not name:
+        logger.warning(f"Skipping model entry missing group/name: {model}")
         continue
-    models_to_process.append({'model': name, 'group': group, 'variables': cfg_variables})
+
+    model_label = f"{group}-{name}"
+    raw_model_vars = model.get('vars')
+
+    if raw_model_vars is None:
+        effective_vars = list(cfg_variables)
+    else:
+        if isinstance(raw_model_vars, str):
+            raw_model_vars = [raw_model_vars]
+        elif not isinstance(raw_model_vars, list):
+            logger.warning(
+                f"Skipping vars override for {model_label}: expected list or string, got {type(raw_model_vars).__name__}; "
+                "using arraylake.variables"
+            )
+            raw_model_vars = list(cfg_variables)
+
+        invalid_vars = [v for v in raw_model_vars if v not in allowed_variables]
+        if invalid_vars:
+            logger.warning(
+                f"Model {model_label} has unknown vars {invalid_vars}; allowed vars are {sorted(allowed_variables)}; "
+                "skipping unknown vars"
+            )
+
+        effective_vars = [v for v in raw_model_vars if v in allowed_variables]
+
+        if not effective_vars:
+            logger.warning(
+                f"Skipping model {model_label}: no valid vars remain after filtering. "
+                "Set models[].vars to valid entries or remove models[].vars to use arraylake.variables defaults."
+            )
+            continue
+
+    models_to_process.append({'model': name, 'group': group, 'variables': effective_vars})
+
+if models_to_process:
+    logger.info("Effective ArrayLake model-variable mapping:")
+    for model_cfg in models_to_process:
+        logger.info(f"  - {model_cfg['group']}-{model_cfg['model']}: {model_cfg['variables']}")
+else:
+    raise RuntimeError(
+        "No valid models to process after applying models[].vars and arraylake.variables filtering"
+    )
 
 logger.info(f"Config: {runtime['config_path']}")
 if target_date:
