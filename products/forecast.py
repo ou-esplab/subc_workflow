@@ -323,7 +323,6 @@ def _pick_realtime_file(
     week_end: pd.Timestamp,
 ) -> tuple[str, str, pd.Timestamp] | None:
     in_week: list[tuple[pd.Timestamp, str, str]] = []
-    any_valid: list[tuple[pd.Timestamp, str, str]] = []
 
     for candidate in model_candidates:
         patt = f"{rt_root}/{group}-{candidate}/forecast/{var}/{var}_{group}-{candidate}_*.daily.nc"
@@ -331,16 +330,12 @@ def _pick_realtime_file(
             init_ts = _extract_init_date(path)
             if init_ts is None or init_ts > fcst_ts:
                 continue
-            rec = (init_ts, path, candidate)
-            any_valid.append(rec)
             if week_start <= init_ts <= week_end:
+                rec = (init_ts, path, candidate)
                 in_week.append(rec)
 
     if in_week:
         init_ts, path, candidate = max(in_week, key=lambda rec: rec[0])
-        return path, candidate, init_ts
-    if any_valid:
-        init_ts, path, candidate = max(any_valid, key=lambda rec: rec[0])
         return path, candidate, init_ts
     return None
 
@@ -1019,9 +1014,11 @@ def main():
                 week_end=init_window_end,
             )
             if not chosen:
+                window_start = init_window_start.strftime("%Y%m%d")
+                window_end = init_window_end.strftime("%Y%m%d")
                 print(
-                    f"  - missing this week under candidates: "
-                    f"{', '.join(f'{group}-{name}' for name in model_candidates)}"
+                    f"  - excluded outside recency window [{window_start}..{window_end}] "
+                    f"under candidates: {', '.join(f'{group}-{name}' for name in model_candidates)}"
                 )
                 continue
 
@@ -1044,7 +1041,26 @@ def main():
                 continue
             ds = ds.sel(S=ds["S"][-1])
 
-            ds["L"] = ds["S"].values + ds["L"].dt.floor("D")
+            lead = ds["L"]
+            if np.issubdtype(lead.dtype, np.timedelta64):
+                lead_offsets = lead.dt.floor("D")
+            else:
+                units = str(lead.attrs.get("units", "")).strip().lower()
+                if "hour" in units or units in {"h", "hr", "hrs"}:
+                    unit = "h"
+                elif "min" in units:
+                    unit = "m"
+                elif "sec" in units:
+                    unit = "s"
+                else:
+                    # Most SubX L coordinates are day-based numeric leads.
+                    unit = "D"
+                lead_offsets = xr.DataArray(
+                    pd.to_timedelta(lead.values, unit=unit).floor("D"),
+                    dims=lead.dims,
+                    coords=lead.coords,
+                )
+            ds["L"] = ds["S"].values + lead_offsets
             ds = ds.drop_vars("S", errors="ignore")
             ds = ds.rename({"X": "lon", "Y": "lat", "L": "lead"})
             ds["lon"].attrs["units"] = "degrees_east"
