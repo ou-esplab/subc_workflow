@@ -81,6 +81,8 @@ def _build_runtime_config() -> dict:
         'datatype': al_cfg.get('datatype', 'forecast'),
         'branch_name': al_cfg.get('branch', 'main'),
         'variables': al_cfg.get('variables') or ['pr', 'tas', 'rlut', 'ts', 'ua', 'va', 'zg'],
+        'model_vars': al_cfg.get('model_vars') or {},
+        'skip_models': al_cfg.get('skip_models') or [],
         'models': models,
         'date_filter': date_arg,
         'dry_run': bool(args.dry_run or os.environ.get('ARRAYLAKE_DRY_RUN') == '1'),
@@ -119,6 +121,8 @@ target_date = runtime['date_filter']
 dry_run = runtime['dry_run']
 cfg_variables = list(runtime['variables'])
 allowed_variables = set(cfg_variables)
+arraylake_model_vars = runtime.get('model_vars') or {}
+skip_models = set(runtime.get('skip_models') or [])
 
 # Build model list from workflow config so this stage stays in sync with config.yaml.
 models_to_process = []
@@ -130,7 +134,12 @@ for model in runtime['models']:
         continue
 
     model_label = f"{group}-{name}"
-    raw_model_vars = model.get('vars')
+
+    if model_label in skip_models:
+        logger.info(f"Skipping {model_label}: listed in arraylake.skip_models")
+        continue
+
+    raw_model_vars = arraylake_model_vars.get(model_label, arraylake_model_vars.get(name, model.get('vars')))
 
     if raw_model_vars is None:
         effective_vars = list(cfg_variables)

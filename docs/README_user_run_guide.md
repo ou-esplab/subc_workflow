@@ -157,8 +157,9 @@ python3 runners/cli.py --system subx --config config.yaml --init 20260305 --stag
 ArrayLake variable selection behavior:
 
 - Global defaults come from `arraylake.variables`.
+- Stage-specific overrides come from `arraylake.model_vars` when present.
 - Per-model overrides come from `models[].vars`.
-- Precedence: `models[].vars` overrides `arraylake.variables` for that model.
+- Precedence: `arraylake.model_vars` overrides `models[].vars`, which overrides `arraylake.variables` for ArrayLake.
 - Validation policy: unknown values in `models[].vars` are warned and skipped.
 - If a model override resolves to no valid variables, that model is skipped with a warning.
 - If `models[].vars` is omitted, the model uses the global `arraylake.variables` list.

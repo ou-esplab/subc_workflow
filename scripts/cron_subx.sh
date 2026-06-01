@@ -20,7 +20,7 @@ cd "$ROOT_DIR"
 
 # ---- Configuration ----------------------------------------------------------
 CONFIG="${SUBX_CONFIG:-$ROOT_DIR/config.yaml}"
-STAGES="${SUBX_STAGES:-ingest arraylake products pycpt publish}"
+STAGES="${SUBX_STAGES:-ingest preprocess products publish arraylake}"
 CONDA_BASE="${CONDA_BASE:-$HOME/miniconda3}"
 ENV_NAME="${ENV_NAME:-subc_workflow_env}"
 LOCK_FILE="/tmp/subx_cron.lock"
@@ -31,7 +31,7 @@ LOG_DIR="$ROOT_DIR/logs/cron"
 mkdir -p "$LOG_DIR"
 LOG_FILE="$LOG_DIR/subx_${TS}.log"
 
-log() { echo "[$(date -u +%F\ %T\ UTC)] $*" | tee -a "$LOG_FILE"; }
+log() { echo "[$(date -u +%F\ %T\ UTC)] $*"; }
 
 exec > >(tee -a "$LOG_FILE") 2>&1
 
@@ -51,23 +51,26 @@ fi
 echo $$ > "$LOCK_FILE"
 trap 'rm -f "$LOCK_FILE"; log "==> Lock released."' EXIT
 
-# ---- Conda environment ------------------------------------------------------
+# ---- Conda setup ------------------------------------------------------------
 CONDA_SH="$CONDA_BASE/etc/profile.d/conda.sh"
 if [[ ! -f "$CONDA_SH" ]]; then
     log "[FATAL] conda.sh not found at $CONDA_SH. Set CONDA_BASE."
     exit 2
 fi
+# Disable set -u briefly: conda.sh may reference unset variables (e.g. PS1)
+# in non-interactive shells, which would otherwise abort the script.
+set +u
 # shellcheck source=/dev/null
 source "$CONDA_SH"
-conda activate "$ENV_NAME"
-log "[INFO] Activated conda env: $ENV_NAME (python=$(python3 -V 2>&1))"
+set -u
+log "[INFO] Using conda env: $ENV_NAME"
 
 # ---- Resolve forecast date --------------------------------------------------
 if [[ -n "${SUBX_INIT:-}" ]]; then
     INIT_DATE="$SUBX_INIT"
     log "[INFO] Using provided init date: $INIT_DATE"
 else
-    INIT_DATE="$(python3 - <<'PY'
+    INIT_DATE="$(conda run -n "$ENV_NAME" python3 - <<'PY'
 from datetime import datetime, timedelta
 now = datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
 print((now - timedelta(days=(now.weekday() - 3) % 7)).strftime('%Y%m%d'))
@@ -80,7 +83,7 @@ fi
 notify_failure() {
     local exit_code=$?
     log "[ERROR] Workflow failed (exit $exit_code). Sending notification."
-    python3 - "$CONFIG" <<'PY' || true
+    conda run -n "$ENV_NAME" python3 - "$CONFIG" <<'PY' || true
 import sys, yaml
 from utils.utils_email import send_email
 cfg = yaml.safe_load(open(sys.argv[1])) or {}
@@ -96,7 +99,8 @@ trap 'notify_failure' ERR
 # ---- Run workflow -----------------------------------------------------------
 log "[INFO] Running stages: $STAGES"
 # shellcheck disable=SC2086
-python3 "$ROOT_DIR/runners/cli.py" \
+conda run --no-capture-output -n "$ENV_NAME" \
+    python3 "$ROOT_DIR/runners/cli.py" \
     --system subx \
     --config "$CONFIG" \
     --init "$INIT_DATE" \

@@ -10,12 +10,12 @@ paths:
   thresholds_template: /data/esplab/gbrown/GWSC/percentile{percentile}_{modelkey}_thres_{var}.nc
   thresholds_gefs_pr: /data/esplab/gbrown/GWSC/percentile{percentile}_GEFSthres_pr.nc
 models:
-  - { group: EMC,  name: GEFSv12_CPC, vars: [tas, pr, zg], levels: [2m, sfc, 500] }
-  - { group: ESRL, name: FIMr1p1,     vars: [tas, pr, zg], levels: [2m, sfc, 500] }
-  - { group: RSMAS,name: CCSM4,       vars: [tas, pr, zg], levels: [2m, sfc, 500] }
-  - { group: GMAO, name: GEOS_V2p1_5daily, vars: [tas, pr, zg], levels: [2m, sfc, 500] }
-  - { group: ECCC, name: GEPS8,       vars: [tas, pr, zg], levels: [2m, sfc, 500] }
-  - { group: NCEP, name: CFSv2,       vars: [tas, pr, zg], levels: [2m, sfc, 500] }
+  - { group: ECCC, name: GEPS8,            vars: [pr, rlut, tas, ts, ua, va, zg], levels: [sfc, sfc, 2m, sfc, 200, 200, 500] }
+  - { group: EMC,  name: GEFSv12_CPC,      vars: [pr, tas, zg],                   levels: [sfc, 2m, 500] }
+  - { group: ESRL, name: FIMr1p1,          vars: [pr, rlut, tas, ts, ua, va, zg], levels: [sfc, sfc, 2m, sfc, 200, 200, 500] }
+  - { group: GMAO, name: GEOS_V2p1_5daily, vars: [pr, rlut, tas, ts, ua, va, zg], levels: [sfc, sfc, 2m, sfc, 200, 200, 500] }
+  - { group: NCEP, name: CFSv2,            vars: [tas, pr, zg],                   levels: [2m, sfc, 500] }
+  - { group: RSMAS,name: CCSM4,            vars: [pr, rlut, tas, ts, ua, va, zg], levels: [sfc, sfc, 2m, sfc, 200, 200, 500] }
 
 model_name_map:
   GMAO-GEOS_V2p1_5daily: GEOS_V2p1
@@ -96,9 +96,15 @@ concurrency:
   downloads: 3
 
 arraylake:
-  enabled: true
+  enabled: true 
   repo: ou-subc/subc-forecasts
   branch: main
   input_root: /data/esplab/subc-backup
   batch_size: 1
   variables: [pr, tas, rlut, ts, ua, va, zg]
+  skip_models: [NCEP-CFSv2]
+  # Optional per-model variable overrides. If omitted, arraylake.variables is used.
+  # Example:
+  #   model_vars:
+  #     ECCC-GEPS8: [pr, tas]
+  model_vars: {}

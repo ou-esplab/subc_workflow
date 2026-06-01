@@ -837,7 +837,7 @@ def _plot_legacy_weekly_products(
     panel_models: list[str],
 ) -> None:
     tas_domains = [
-        ("Global", (-180, 180), (-60, 80)),
+        ("Global", (-180, 180), (-90, 90)),
         ("NorthAmerica", (-170, -30), (10, 80)),
         ("Iran", (40, 64), (24, 40)),
         ("Mexico", (-118, -97), (20, 33)),
@@ -880,7 +880,7 @@ def _plot_legacy_weekly_products(
         filename_prefix="Precip",
         domain_name="Global",
         lon_bounds=(-180, 180),
-        lat_bounds=(-60, 80),
+        lat_bounds=(-90, 90),
         levels=np.array([-35, -25, -15, -10, -5, -2, 2, 5, 10, 15, 25, 35]),
         panel_models=panel_models,
     )
