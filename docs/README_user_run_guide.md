@@ -138,10 +138,17 @@ Example source routing in `config.yaml`:
 ```yaml
 ingest:
   source_default: iridl
-  model_source:
-    ESRL-FIMr1p1: direct_esrl
-    GMAO-GEOS_V2p1_5daily: direct_gmao
-    ECCC-GEPS8: direct_eccc
+  primary_enabled: true
+  model_source: {}
+  shadow:
+    enabled: true
+    rt_root: /data/esplab/subc-backup-direct-shadow
+    model_source:
+      ESRL-FIMr1p1: direct_esrl
+      GMAO-GEOS_V2p1_5daily: direct_gmao
+      GMAO-GEOS_V3: direct_gmao_v3
+      ECCC-GEPS8: direct_eccc
+      RSMAS-CCSM4: direct_rsmas
   direct:
     ftp_email: your_email@example.org
     providers:
@@ -149,11 +156,21 @@ ingest:
         url: ftp://gsdftp.fsl.noaa.gov/SubX-ESRL-FIMr1.1/
       gmao:
         url: https://gmao.gsfc.nasa.gov/gmaoftp/gmaofcst/subx/GEOS_S2S_V2.1_fcst/
+      gmao_v3:
+        url: https://portal.nccs.nasa.gov/datashare/gmao/geos-s2s-3/NRT/SubC/
       eccc:
         url: https://collaboration.cmc.ec.gc.ca/cmc/CMOI/GRIB/GEPS/forecast/subX_fcst/
+      rsmas:
+        url: ftp://decadal.rsmas.miami.edu/pub/CPC_DATA/CCSM4/forecast/priority1/
 ```
 
-Supported source values: `iridl`, `direct`, `direct_esrl`, `direct_gmao`, `direct_eccc`.
+Supported source values: `iridl`, `direct`, `direct_esrl`, `direct_gmao`, `direct_gmao_v3`, `direct_eccc`, `direct_rsmas`.
+
+With this configuration, ingest runs in shadow mode:
+- Primary runtime files remain in `paths.rt_root` and continue to feed downstream stages.
+- Direct-source files are downloaded to `ingest.shadow.rt_root` for side-by-side validation.
+
+For shadow-only ingest tests, set `ingest.primary_enabled: false`.
 
 ### `products`
 

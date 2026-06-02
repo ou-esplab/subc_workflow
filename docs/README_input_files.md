@@ -26,6 +26,15 @@ Supported sources:
 
 No local input files are required — data is fetched from the remote server. The downloaded files become the input for all subsequent stages.
 
+When `ingest.shadow.enabled: true`, direct-provider files are downloaded in
+parallel to `ingest.shadow.rt_root` using the same normalized filename
+convention for parity checks, while the primary workflow continues using files
+under `paths.rt_root`.
+
+When `ingest.primary_enabled: false`, primary ingest is skipped and only shadow
+downloads are executed. This is useful for direct-source testing without
+modifying files under `paths.rt_root`.
+
 **Output of this stage → input for preprocess, products, pycpt, arraylake:**
 
 | File pattern | Format | Content |

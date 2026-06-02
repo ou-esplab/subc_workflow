@@ -39,6 +39,7 @@ ingest:
     model_source:
       ESRL-FIMr1p1: direct_esrl
       GMAO-GEOS_V2p1_5daily: direct_gmao
+      GMAO-GEOS_V3: direct_gmao_v3
       ECCC-GEPS8: direct_eccc
       RSMAS-CCSM4: direct_rsmas
   # Lookback window used by direct source discovery if provider listings expose
@@ -57,6 +58,8 @@ ingest:
         url: ftp://gsdftp.fsl.noaa.gov/SubX-ESRL-FIMr1.1/
       gmao:
         url: https://gmao.gsfc.nasa.gov/gmaoftp/gmaofcst/subx/GEOS_S2S_V2.1_fcst/pr1/
+      gmao_v3:
+        url: https://portal.nccs.nasa.gov/datashare/gmao/geos-s2s-3/NRT/SubC/
       eccc:
         url: https://collaboration.cmc.ec.gc.ca/cmc/CMOI/GRIB/GEPS/forecast/subX_fcst/
       rsmas:
