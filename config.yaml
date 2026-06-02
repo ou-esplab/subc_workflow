@@ -14,6 +14,7 @@ models:
   - { group: EMC,  name: GEFSv12_CPC,      vars: [pr, tas, zg],                   levels: [sfc, 2m, 500] }
   - { group: ESRL, name: FIMr1p1,          vars: [pr, rlut, tas, ts, ua, va, zg], levels: [sfc, sfc, 2m, sfc, 200, 200, 500] }
   - { group: GMAO, name: GEOS_V2p1_5daily, vars: [pr, rlut, tas, ts, ua, va, zg], levels: [sfc, sfc, 2m, sfc, 200, 200, 500] }
+  - { group: GMAO, name: GEOS_V3,         vars: [pr, rlut, tas, ts, ua, va, zg], levels: [sfc, sfc, 2m, sfc, 200, 200, 500] }
   - { group: NCEP, name: CFSv2,            vars: [tas, pr, zg],                   levels: [2m, sfc, 500] }
   - { group: RSMAS,name: CCSM4,            vars: [pr, rlut, tas, ts, ua, va, zg], levels: [sfc, sfc, 2m, sfc, 200, 200, 500] }
 
@@ -23,12 +24,23 @@ model_name_map:
 ingest:
   # Default source for model downloads. Keep as iridl for shadow-mode rollout.
   source_default: iridl
+  # Set false to run shadow-only ingest for direct-source testing.
+  primary_enabled: false
   # Optional per-model source overrides using GROUP-MODEL keys.
-  # Supported values: iridl, direct, direct_esrl, direct_gmao, direct_eccc
-  model_source:
-    ESRL-FIMr1p1: direct_esrl
-    GMAO-GEOS_V2p1_5daily: direct_gmao
-    ECCC-GEPS8: direct_eccc
+  # Keep empty while downstream remains on IRIDL.
+  # Supported values: iridl, direct, direct_esrl, direct_gmao, direct_eccc, direct_rsmas
+  model_source: {}
+  # Optional shadow ingest that runs in parallel and writes to a separate root.
+  # This is used to validate direct-source ingest without changing downstream
+  # stages that read from paths.rt_root.
+  shadow:
+    enabled: true
+    rt_root: /data/esplab/subc-backup-direct-shadow
+    model_source:
+      ESRL-FIMr1p1: direct_esrl
+      GMAO-GEOS_V2p1_5daily: direct_gmao
+      ECCC-GEPS8: direct_eccc
+      RSMAS-CCSM4: direct_rsmas
   # Lookback window used by direct source discovery if provider listings expose
   # multiple initializations.
   lookback_days: 7
@@ -36,13 +48,19 @@ ingest:
     # Anonymous FTP password for provider endpoints that require an email.
     # Prefer setting SUBX_DIRECT_FTP_EMAIL in the runtime environment.
     ftp_email: anonymous@example.com
+    # ECCC tar archives include ensemble members (m00-m20). By default,
+    # downloader selects the first available member in this configured order.
+    eccc:
+      member: m00-m20
     providers:
       esrl:
         url: ftp://gsdftp.fsl.noaa.gov/SubX-ESRL-FIMr1.1/
       gmao:
-        url: https://gmao.gsfc.nasa.gov/gmaoftp/gmaofcst/subx/GEOS_S2S_V2.1_fcst/
+        url: https://gmao.gsfc.nasa.gov/gmaoftp/gmaofcst/subx/GEOS_S2S_V2.1_fcst/pr1/
       eccc:
         url: https://collaboration.cmc.ec.gc.ca/cmc/CMOI/GRIB/GEPS/forecast/subX_fcst/
+      rsmas:
+        url: ftp://decadal.rsmas.miami.edu/pub/CPC_DATA/CCSM4/forecast/priority1/
   
 exceedance:
   var: pr
@@ -129,7 +147,7 @@ arraylake:
   input_root: /data/esplab/subc-backup
   batch_size: 1
   variables: [pr, tas, rlut, ts, ua, va, zg]
-  skip_models: [NCEP-CFSv2]
+  skip_models: [NCEP-CFSv2, GMAO-GEOS_V3]
   # Optional per-model variable overrides. If omitted, arraylake.variables is used.
   # Example:
   #   model_vars:
