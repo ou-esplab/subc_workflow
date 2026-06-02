@@ -19,6 +19,30 @@ models:
 
 model_name_map:
   GMAO-GEOS_V2p1_5daily: GEOS_V2p1
+
+ingest:
+  # Default source for model downloads. Keep as iridl for shadow-mode rollout.
+  source_default: iridl
+  # Optional per-model source overrides using GROUP-MODEL keys.
+  # Supported values: iridl, direct, direct_esrl, direct_gmao, direct_eccc
+  model_source:
+    ESRL-FIMr1p1: direct_esrl
+    GMAO-GEOS_V2p1_5daily: direct_gmao
+    ECCC-GEPS8: direct_eccc
+  # Lookback window used by direct source discovery if provider listings expose
+  # multiple initializations.
+  lookback_days: 7
+  direct:
+    # Anonymous FTP password for provider endpoints that require an email.
+    # Prefer setting SUBX_DIRECT_FTP_EMAIL in the runtime environment.
+    ftp_email: anonymous@example.com
+    providers:
+      esrl:
+        url: ftp://gsdftp.fsl.noaa.gov/SubX-ESRL-FIMr1.1/
+      gmao:
+        url: https://gmao.gsfc.nasa.gov/gmaoftp/gmaofcst/subx/GEOS_S2S_V2.1_fcst/
+      eccc:
+        url: https://collaboration.cmc.ec.gc.ca/cmc/CMOI/GRIB/GEPS/forecast/subX_fcst/
   
 exceedance:
   var: pr
@@ -45,6 +69,9 @@ regions:
   - name: Mexico
     subx:  { lon: [242, 263], lat: [20, 33] }
     pycpt: { lon: [-118, -97], lat: [20, 33] }
+  - name: CAsia
+    subx:  { lon: [45, 89], lat: [29, 56] }
+    pycpt: { lon: [45, 89], lat: [29, 56] }
 pycpt:
   # Local CHIRPS daily data directory and variable name for building weekly files if needed
   local_chirps_daily_dir: /data/esplab/shared/obs/gridded/atm/precip/daily/chirps-v2.0/p25

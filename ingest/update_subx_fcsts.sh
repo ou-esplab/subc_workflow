@@ -37,6 +37,9 @@ if not isinstance(models, list) or not models:
 
 model_map = cfg.get("model_name_map") or {}
 downloads = max(int((cfg.get("concurrency") or {}).get("downloads", 1)), 1)
+ingest_cfg = cfg.get("ingest") or {}
+source_default = str(ingest_cfg.get("source_default", "iridl") or "iridl")
+model_source = ingest_cfg.get("model_source") or {}
 
 print(f"MAXJOBS|{downloads}")
 for model in models:
@@ -44,14 +47,15 @@ for model in models:
     server = model["name"]
     local = model_map.get(f"{group}-{server}", model_map.get(server, server))
     variables = ",".join(model.get("vars") or [])
-    print(f"MODEL|{group}|{server}|{local}|{variables}")
+    source = str(model_source.get(f"{group}-{server}", source_default) or source_default)
+    print(f"MODEL|{group}|{server}|{local}|{variables}|{source}")
 PY
 )
 
 MAXJOBS=1
 MODEL_SPECS=()
 for line in "${CONFIG_LINES[@]}"; do
-  IFS='|' read -r kind field1 field2 field3 field4 <<<"$line"
+  IFS='|' read -r kind field1 field2 field3 field4 field5 <<<"$line"
   if [[ "$kind" == "MAXJOBS" ]]; then
     MAXJOBS="$field1"
   elif [[ "$kind" == "MODEL" ]]; then
@@ -70,11 +74,11 @@ export SUBX_CONFIG="$CONFIG"
 
 job_count=0
 for spec in "${MODEL_SPECS[@]}"; do
-  IFS='|' read -r _ group server_model local_model vars_csv <<<"$spec"
+  IFS='|' read -r _ group server_model local_model vars_csv ingest_source <<<"$spec"
   IFS=',' read -r -a vars <<<"$vars_csv"
-  echo "==> [update_subx_fcsts] Model $group/$server_model -> $local_model vars=${vars[*]}"
+  echo "==> [update_subx_fcsts] Model $group/$server_model -> $local_model source=$ingest_source vars=${vars[*]}"
   for var in "${vars[@]}"; do
-    stdbuf -oL -eL "$SCRIPT_DIR/download_subx_rtfcst.sh" \
+    SUBX_INGEST_SOURCE="$ingest_source" stdbuf -oL -eL "$SCRIPT_DIR/download_subx_rtfcst.sh" \
       "$group" "$server_model" "$var" forecast "$FCSTDATE" "$local_model" &
     ((++job_count))
     if (( job_count % MAXJOBS == 0 )); then

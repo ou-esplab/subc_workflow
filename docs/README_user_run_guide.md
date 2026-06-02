@@ -130,6 +130,30 @@ python3 runners/cli.py --system subx --config config.yaml --init 20260305 --stag
 - Requests or downloads realtime SubX files.
 - Uses `SUBX_DOWNLOAD_BIN` for real download execution.
 - Can use `SUBX_DOWNLOAD_STUB=1` for smoke-test request markers.
+- Supports source routing from config so selected models can use direct
+  provider endpoints while others continue using IRIDL.
+
+Example source routing in `config.yaml`:
+
+```yaml
+ingest:
+  source_default: iridl
+  model_source:
+    ESRL-FIMr1p1: direct_esrl
+    GMAO-GEOS_V2p1_5daily: direct_gmao
+    ECCC-GEPS8: direct_eccc
+  direct:
+    ftp_email: your_email@example.org
+    providers:
+      esrl:
+        url: ftp://gsdftp.fsl.noaa.gov/SubX-ESRL-FIMr1.1/
+      gmao:
+        url: https://gmao.gsfc.nasa.gov/gmaoftp/gmaofcst/subx/GEOS_S2S_V2.1_fcst/
+      eccc:
+        url: https://collaboration.cmc.ec.gc.ca/cmc/CMOI/GRIB/GEPS/forecast/subX_fcst/
+```
+
+Supported source values: `iridl`, `direct`, `direct_esrl`, `direct_gmao`, `direct_eccc`.
 
 ### `products`
 

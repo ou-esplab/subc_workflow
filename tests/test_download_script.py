@@ -39,6 +39,74 @@ class DownloadScriptTests(unittest.TestCase):
             self.assertTrue(marker.exists())
             payload = json.loads(marker.read_text(encoding="utf-8"))
             self.assertEqual(payload["mode"], "stub")
+            self.assertEqual(payload["source"], "iridl")
+
+    def test_update_script_passes_model_source_to_downloader(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            config_path = root / "config.yaml"
+            config_path.write_text(
+                "\n".join(
+                    [
+                        "paths:",
+                        f"  rt_root: {root / 'rt'}",
+                        "concurrency:",
+                        "  downloads: 1",
+                        "ingest:",
+                        "  source_default: iridl",
+                        "  model_source:",
+                        "    ESRL-FIMr1p1: direct_esrl",
+                        "models:",
+                        "  - group: ESRL",
+                        "    name: FIMr1p1",
+                        "    vars: [pr]",
+                        "    levels: [sfc]",
+                        "  - group: EMC",
+                        "    name: GEFSv12_CPC",
+                        "    vars: [pr]",
+                        "    levels: [sfc]",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+
+            env = os.environ.copy()
+            env["SUBX_DOWNLOAD_STUB"] = "1"
+
+            subprocess.run(
+                [
+                    str(REPO_ROOT / "ingest" / "update_subx_fcsts.sh"),
+                    "20260305",
+                    str(config_path),
+                ],
+                check=True,
+                cwd=REPO_ROOT,
+                env=env,
+            )
+
+            esrl_marker = (
+                root
+                / "rt"
+                / "ESRL-FIMr1p1"
+                / "forecast"
+                / "pr"
+                / "pr_ESRL-FIMr1p1_20260305.download-request.json"
+            )
+            emc_marker = (
+                root
+                / "rt"
+                / "EMC-GEFSv12_CPC"
+                / "forecast"
+                / "pr"
+                / "pr_EMC-GEFSv12_CPC_20260305.download-request.json"
+            )
+            self.assertTrue(esrl_marker.exists())
+            self.assertTrue(emc_marker.exists())
+
+            esrl_payload = json.loads(esrl_marker.read_text(encoding="utf-8"))
+            emc_payload = json.loads(emc_marker.read_text(encoding="utf-8"))
+            self.assertEqual(esrl_payload["source"], "direct_esrl")
+            self.assertEqual(emc_payload["source"], "iridl")
 
 
 if __name__ == "__main__":

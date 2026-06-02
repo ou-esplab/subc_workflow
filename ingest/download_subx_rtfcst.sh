@@ -41,14 +41,31 @@ TARGET_DIR="${RT_ROOT}/${GROUP}-${LOCAL_MODEL}/${DATATYPE}/${VAR}"
 mkdir -p "$TARGET_DIR"
 
 echo "[DL] group=$GROUP server_model=$SERVER_MODEL local_model=$LOCAL_MODEL var=$VAR type=$DATATYPE fcst=$FCST"
+INGEST_SOURCE_RAW="${SUBX_INGEST_SOURCE:-iridl}"
+INGEST_SOURCE="$(printf '%s' "$INGEST_SOURCE_RAW" | tr '[:upper:]' '[:lower:]')"
+echo "[DL] source=$INGEST_SOURCE"
 
 if [[ "${SUBX_DOWNLOAD_STUB:-0}" == "1" ]]; then
   marker_file="${TARGET_DIR}/${VAR}_${GROUP}-${LOCAL_MODEL}_${FCST}.download-request.json"
   cat > "$marker_file" <<EOF
-{"mode":"stub","group":"$GROUP","server_model":"$SERVER_MODEL","local_model":"$LOCAL_MODEL","var":"$VAR","datatype":"$DATATYPE","fcst":"$FCST"}
+{"mode":"stub","group":"$GROUP","server_model":"$SERVER_MODEL","local_model":"$LOCAL_MODEL","var":"$VAR","datatype":"$DATATYPE","fcst":"$FCST","source":"$INGEST_SOURCE"}
 EOF
   echo "[DL] Stub mode enabled. Wrote marker: $marker_file"
   exit 0
+fi
+
+if [[ "$INGEST_SOURCE" != "iridl" ]]; then
+  echo "[DL] Direct source dispatch via utils/download_subx_direct.py"
+  python3 "$SCRIPT_DIR/../utils/download_subx_direct.py" \
+    --source "$INGEST_SOURCE" \
+    --group "$GROUP" \
+    --server-model "$SERVER_MODEL" \
+    --local-model "$LOCAL_MODEL" \
+    --var "$VAR" \
+    --fcst "$FCST" \
+    --target-dir "$TARGET_DIR" \
+    --config "${SUBX_CONFIG:-}"
+  exit $?
 fi
 
 BASE_URL="https://iridl.ldeo.columbia.edu/SOURCES/.Models/.SubC"

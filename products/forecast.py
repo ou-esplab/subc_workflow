@@ -23,7 +23,7 @@ What this does
 Inputs (from config.yaml)
 -------------------------
 paths:
-  rt_root, hc_root, out_weekly, thresholds_template, thresholds_gefs_pr
+  rt_root, hc_root, out_weekly
 models:  list of {group,name,vars,levels}
 exceedance: {model_id, var, percentile, window_days, modelkey}
 regions:    list of { name, subx:{lon,lat}, pycpt:{lon,lat} }
@@ -835,15 +835,21 @@ def _plot_legacy_weekly_products(
     out_data: str,
     fcstdate: str,
     panel_models: list[str],
+    cfg: dict,
 ) -> None:
-    tas_domains = [
-        ("Global", (-180, 180), (-90, 90)),
-        ("NorthAmerica", (-170, -30), (10, 80)),
-        ("Iran", (40, 64), (24, 40)),
-        ("Mexico", (-118, -97), (20, 33)),
-        ("Venezuela", (-73, -60), (0, 13)),
-    ]
-    for domain_name, lon_bounds, lat_bounds in tas_domains:
+    def _to_negpos(lon: float) -> float:
+        return lon - 360 if lon > 180 else lon
+
+    # Build domain list from config regions; convert 0-360 lons to -180/180
+    domains = []
+    for r in cfg.get("regions", []):
+        name = r["name"]
+        bounds = r.get("subx", {})
+        lons = [_to_negpos(l) for l in bounds.get("lon", [-180, 180])]
+        lats = bounds.get("lat", [-90, 90])
+        domains.append((name, (min(lons), max(lons)), (min(lats), max(lats))))
+
+    for domain_name, lon_bounds, lat_bounds in domains:
         _plot_weekly_panels(
             ds_subx,
             var_name="tas",
@@ -870,62 +876,21 @@ def _plot_legacy_weekly_products(
             lat_bounds=lat_bounds,
         )
 
-    _plot_weekly_panels(
-        ds_subx,
-        var_name="pr",
-        out_images=out_images,
-        fcstdate=fcstdate,
-        title_prefix="Precipitation Anomalies (mm/week)",
-        units="mm/week",
-        filename_prefix="Precip",
-        domain_name="Global",
-        lon_bounds=(-180, 180),
-        lat_bounds=(-90, 90),
-        levels=np.array([-35, -25, -15, -10, -5, -2, 2, 5, 10, 15, 25, 35]),
-        panel_models=panel_models,
-    )
-    _plot_weekly_panels(
-        ds_subx,
-        var_name="pr",
-        out_images=out_images,
-        fcstdate=fcstdate,
-        title_prefix="Precipitation Anomalies (mm/week)",
-        units="mm/week",
-        filename_prefix="Precip",
-        domain_name="NorthAmerica",
-        lon_bounds=(-170, -30),
-        lat_bounds=(10, 80),
-        levels=np.array([-35, -25, -15, -10, -5, -2, 2, 5, 10, 15, 25, 35]),
-        panel_models=panel_models,
-    )
-    _plot_weekly_panels(
-        ds_subx,
-        var_name="pr",
-        out_images=out_images,
-        fcstdate=fcstdate,
-        title_prefix="Precipitation Anomalies (mm/week)",
-        units="mm/week",
-        filename_prefix="Precip",
-        domain_name="Iran",
-        lon_bounds=(40, 64),
-        lat_bounds=(24, 40),
-        levels=np.array([-35, -25, -15, -10, -5, -2, 2, 5, 10, 15, 25, 35]),
-        panel_models=panel_models,
-    )
-    _plot_weekly_panels(
-        ds_subx,
-        var_name="pr",
-        out_images=out_images,
-        fcstdate=fcstdate,
-        title_prefix="Precipitation Anomalies (mm/week)",
-        units="mm/week",
-        filename_prefix="Precip",
-        domain_name="Venezuela",
-        lon_bounds=(-73, -60),
-        lat_bounds=(0, 13),
-        levels=np.array([-35, -25, -15, -10, -5, -2, 2, 5, 10, 15, 25, 35]),
-        panel_models=panel_models,
-    )
+    for domain_name, lon_bounds, lat_bounds in domains:
+        _plot_weekly_panels(
+            ds_subx,
+            var_name="pr",
+            out_images=out_images,
+            fcstdate=fcstdate,
+            title_prefix="Precipitation Anomalies (mm/week)",
+            units="mm/week",
+            filename_prefix="Precip",
+            domain_name=domain_name,
+            lon_bounds=lon_bounds,
+            lat_bounds=lat_bounds,
+            levels=np.array([-35, -25, -15, -10, -5, -2, 2, 5, 10, 15, 25, 35]),
+            panel_models=panel_models,
+        )
 
     _plot_weekly_panels(
         ds_subx,
@@ -1220,7 +1185,7 @@ def main():
 
     panel_models = [f"{m['group']}-{m['name']}" for m in cfg.get("models", [])]
     panel_models.append("SUBC-MME")
-    _plot_legacy_weekly_products(ds_subx, out_images, out_data, fcstdate, panel_models)
+    _plot_legacy_weekly_products(ds_subx, out_images, out_data, fcstdate, panel_models, cfg)
     panel_order = [
         m for m in _resolve_panel_models([str(m) for m in ds_subx["model"].values], panel_models)
         if m != "SUBC-MME"
