@@ -7,11 +7,14 @@ __pycache__/
 
 # Notebook/editor artifacts
 .ipynb_checkpoints/
+*.swp
+*.swo
 
 # Workflow-generated runtime outputs
 .tmp_smoke/
 logs/
 scratch/
+ingest/wget-log*
 
 # Optional local env files
 .env

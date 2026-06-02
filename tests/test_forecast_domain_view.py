@@ -1,7 +1,14 @@
 import unittest
+import sys
+from pathlib import Path
 
 import numpy as np
 import xarray as xr
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+PRODUCTS_DIR = REPO_ROOT / "products"
+if str(PRODUCTS_DIR) not in sys.path:
+    sys.path.insert(0, str(PRODUCTS_DIR))
 
 from forecast import _prepare_domain_view, _resolve_panel_models
 

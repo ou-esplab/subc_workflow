@@ -6,11 +6,15 @@ This document tracks diagnostic utilities and how to run ad hoc checks safely.
 
 - [utils/exceedance_diag.py](../utils/exceedance_diag.py): validates exceedance dimensionality and threshold selection behavior by model and region.
 - [utils/split_percentiles_by_mmdd.py](../utils/split_percentiles_by_mmdd.py): utility to split large percentile climatology files into per-MMDD threshold files.
+- [preprocess/validate_realtime.py](../preprocess/validate_realtime.py): primary input validation and optional shadow parity reporting.
 
 ## Diagnostic Output Location
 
 - Store ad hoc diagnostic logs under `logs/scratch/`.
 - Avoid `/tmp` for workflow diagnostics.
+- Validation outputs are written under `{out_weekly}/{fcstdate}/data/`.
+- When `ingest.shadow.enabled: true`, validation writes `shadow_parity_manifest.json`
+  with presence parity and schema parity summaries for shadow-model comparisons.
 
 ## Typical Commands
 
@@ -27,6 +31,14 @@ Run non-PyCPT stage regression for a known date (main env):
 PYTHONPATH=. conda run -n subc_workflow_env \
   python runners/cli.py --system subx --config config.yaml --init 20260305 \
   --stages ingest products > logs/scratch/regression_20260305.log 2>&1
+```
+
+Run validation + shadow parity diagnostics only:
+
+```bash
+PYTHONPATH=. conda run -n subc_workflow_env \
+  python preprocess/validate_realtime.py --config config.yaml --fcstdate 20260305 \
+  --outdir /data/esplab/shared/model/initialized/subx/forecast/weekly/20260305/data
 ```
 
 Run the full pipeline including `pycpt` (both envs, via runner):
