@@ -129,6 +129,12 @@ def compute_percentiles(
                     n_skipped += 1
                     continue
 
+                # Drop S dim before concat so years stack cleanly on (year, M).
+                # Without this, xr.concat creates S=N_years and isel(S=0) later
+                # uses only the first year's data for the percentile.
+                if "S" in ds.dims and ds.sizes["S"] == 1:
+                    ds = ds.isel(S=0, drop=True)
+
                 mmdd = ts.strftime("%m-%d")
                 calendardates.setdefault(mmdd, []).append(ds)
                 n_loaded += 1
