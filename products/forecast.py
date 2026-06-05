@@ -49,10 +49,9 @@ import yaml
 
 from utils.subc_pycpt_utils import (
     latest_thursday, fcst_week_dates, ensure_lon, safe_concat,
-    weekly_reduce, save_manifest, compute_exceedance,
-    nearest_mmdd_threshold,
-    plot_exceedance_summary,
+    weekly_reduce, save_manifest,
 )
+from utils.exceedance_utils import compute_exceedance, nearest_mmdd_threshold
 
 
 DEBUG = False
@@ -845,9 +844,14 @@ def _plot_legacy_weekly_products(
     for r in cfg.get("regions", []):
         name = r["name"]
         bounds = r.get("subx", {})
-        lons = [_to_negpos(l) for l in bounds.get("lon", [-180, 180])]
+        raw_lons = bounds.get("lon", [-180, 180])
+        lo_neg = _to_negpos(raw_lons[0])
+        hi_neg = _to_negpos(raw_lons[1])
+        # [0, 360] collapses to [0, 0] after negpos; treat as full global span
+        if lo_neg == hi_neg:
+            lo_neg, hi_neg = -180, 180
         lats = bounds.get("lat", [-90, 90])
-        domains.append((name, (min(lons), max(lons)), (min(lats), max(lats))))
+        domains.append((name, (lo_neg, hi_neg), (lats[0], lats[1])))
 
     for domain_name, lon_bounds, lat_bounds in domains:
         _plot_weekly_panels(
@@ -943,7 +947,6 @@ def main():
     out_data   = os.path.join(out_weekly, fcstdate, 'data')
     os.makedirs(out_images, exist_ok=True)
     os.makedirs(out_data,   exist_ok=True)
-    _remove_stale_legacy_products(out_images)
     _remove_stale_exceedance_model_images(out_images, fcstdate)
 
     ds_anoms_by_model = []
@@ -988,15 +991,17 @@ def main():
                 continue
 
             fp, chosen_model_name, chosen_init = chosen
-            ds = xr.open_dataset(fp)
+            try:
+                ds = xr.open_dataset(fp)
+            except OSError as exc:
+                print(f"  [WARN] Skipping {group}-{chosen_model_name} {var}: cannot open {fp} ({exc})")
+                continue
             _debug_print(f"  [INFO] Using init for {var}: {group}-{chosen_model_name} {chosen_init:%Y%m%d}")
 
             model_id_local = f"{group}-{chosen_model_name}"
             prev_init = model_init_dates.get(model_id_local)
             if prev_init is None or chosen_init > prev_init:
                 model_init_dates[model_id_local] = chosen_init
-            model_ensemble_counts[model_id_local] = max(model_ensemble_counts.get(model_id_local, 0), ds.sizes.get("M", 1))
-
             if "P" in ds[var].dims:
                 ds = ds.sel(P=int(plev))
             ds["S"] = ds["S"].dt.floor("D")
@@ -1004,7 +1009,33 @@ def main():
             if ds.S.size == 0:
                 print(f"  - all missing after drop: {var}")
                 continue
-            ds = ds.sel(S=ds["S"][-1])
+            if ds.S.size > 1:
+                # Multiple sub-daily inits on the same day (e.g. CFSv2 00z/06z/12z/18z).
+                # Treat each init as a separate ensemble member by collapsing S into M.
+                init_date = ds["S"].values[-1]
+                parts = []
+                m_start = 1
+                for i in range(ds.S.size):
+                    part = ds.isel(S=i, drop=True)
+                    if "M" in part.dims:
+                        n = part.sizes["M"]
+                        part = part.assign_coords(
+                            M=np.arange(m_start, m_start + n, dtype=np.float32)
+                        )
+                        m_start += n
+                    else:
+                        part = part.assign_coords(M=float(m_start)).expand_dims("M")
+                        m_start += 1
+                    parts.append(part)
+                ds = xr.concat(parts, dim="M").assign_coords(S=init_date)
+            else:
+                ds = ds.isel(S=-1)
+
+            # Update ensemble count after S-stacking so sub-daily inits
+            # (e.g. CFSv2 4 inits × 4 members = 16) are counted correctly.
+            model_ensemble_counts[model_id_local] = max(
+                model_ensemble_counts.get(model_id_local, 0), ds.sizes.get("M", 1)
+            )
 
             lead = ds["L"]
             if np.issubdtype(lead.dtype, np.timedelta64):

@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
+import argparse
 import glob
 import json
 import os
@@ -11,20 +12,20 @@ import pandas as pd
 import xarray as xr
 import yaml
 
-from utils.subc_pycpt_utils import (
-    compute_exceedance,
-    ensure_lon,
-    fcst_week_dates,
-    nearest_mmdd_threshold,
-    safe_concat,
-)
+from utils.subc_pycpt_utils import ensure_lon, fcst_week_dates, latest_thursday, safe_concat
+from utils.exceedance_utils import compute_exceedance, nearest_mmdd_threshold
 
 
 def main() -> int:
-    cfg = yaml.safe_load(open("config.yaml"))
+    ap = argparse.ArgumentParser(description="Exceedance diagnostic — validate threshold lookup and output dimensionality")
+    ap.add_argument("--config", default="config.yaml", help="Path to config.yaml")
+    ap.add_argument("--fcstdate", default=None, help="YYYYMMDD (defaults to latest Thursday)")
+    args = ap.parse_args()
+
+    cfg = yaml.safe_load(open(args.config))
     scratch_dir = ".scratch"
     os.makedirs(scratch_dir, exist_ok=True)
-    fcstdate = "20260305"
+    fcstdate = args.fcstdate or latest_thursday(cfg.get("fcstdate"))
     week_dates = fcst_week_dates(fcstdate)
     rt_root = cfg["paths"]["rt_root"]
     hc_root = cfg["paths"]["hc_root"]
@@ -54,7 +55,11 @@ def main() -> int:
         if not files:
             continue
 
-        ds = xr.open_mfdataset(files, combine="by_coords")
+        try:
+            ds = xr.open_mfdataset(files, combine="by_coords")
+        except OSError as exc:
+            print(f"[WARN] Skipping {model_id_local}: cannot open files ({exc})")
+            continue
         if "P" in ds[var].dims:
             ds = ds.sel(P=int(plev))
 
@@ -68,7 +73,25 @@ def main() -> int:
             continue
 
         ds = ds.sel(S=ds["S"][-1])
-        ds["L"] = ds["S"].values + ds["L"].dt.floor("D")
+        lead = ds["L"]
+        if np.issubdtype(lead.dtype, np.timedelta64):
+            lead_offsets = lead.dt.floor("D")
+        else:
+            units = str(lead.attrs.get("units", "")).strip().lower()
+            if "hour" in units or units in {"h", "hr", "hrs"}:
+                unit = "h"
+            elif "min" in units:
+                unit = "m"
+            elif "sec" in units:
+                unit = "s"
+            else:
+                unit = "D"
+            lead_offsets = xr.DataArray(
+                pd.to_timedelta(lead.values, unit=unit).floor("D"),
+                dims=lead.dims,
+                coords=lead.coords,
+            )
+        ds["L"] = ds["S"].values + lead_offsets
         ds = ds.drop_vars("S", errors="ignore").rename({"X": "lon", "Y": "lat", "L": "lead"})
         ds = ensure_lon(ds, lon_conv).assign_coords(model=model_id_local)
         ds_full_by_model.append(ds.assign_coords(model=model_id_local))

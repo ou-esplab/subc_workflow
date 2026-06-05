@@ -14,7 +14,6 @@ models:
   - { group: EMC,  name: GEFSv12_CPC,      vars: [pr, tas, zg],                   levels: [sfc, 2m, 500] }
   - { group: ESRL, name: FIMr1p1,          vars: [pr, rlut, tas, ts, ua, va, zg], levels: [sfc, sfc, 2m, sfc, 200, 200, 500] }
   - { group: GMAO, name: GEOS_V2p1_5daily, vars: [pr, rlut, tas, ts, ua, va, zg], levels: [sfc, sfc, 2m, sfc, 200, 200, 500] }
-  - { group: GMAO, name: GEOS_V3,         vars: [pr, rlut, tas, ts, ua, va, zg], levels: [sfc, sfc, 2m, sfc, 200, 200, 500] }
   - { group: NCEP, name: CFSv2,            vars: [tas, pr, zg],                   levels: [2m, sfc, 500] }
   - { group: RSMAS,name: CCSM4,            vars: [pr, rlut, tas, ts, ua, va, zg], levels: [sfc, sfc, 2m, sfc, 200, 200, 500] }
 
@@ -25,7 +24,7 @@ ingest:
   # Default source for model downloads. Keep as iridl for shadow-mode rollout.
   source_default: iridl
   # Set false to run shadow-only ingest for direct-source testing.
-  primary_enabled: false
+  primary_enabled: true
   # Optional per-model source overrides using GROUP-MODEL keys.
   # Keep empty while downstream remains on IRIDL.
   # Supported values: iridl, direct, direct_esrl, direct_gmao, direct_eccc, direct_rsmas
@@ -34,12 +33,11 @@ ingest:
   # This is used to validate direct-source ingest without changing downstream
   # stages that read from paths.rt_root.
   shadow:
-    enabled: true
+    enabled: false
     rt_root: /data/esplab/subc-backup-direct-shadow
     model_source:
       ESRL-FIMr1p1: direct_esrl
       GMAO-GEOS_V2p1_5daily: direct_gmao
-      GMAO-GEOS_V3: direct_gmao_v3
       ECCC-GEPS8: direct_eccc
       RSMAS-CCSM4: direct_rsmas
   # Lookback window used by direct source discovery if provider listings expose
@@ -79,8 +77,11 @@ pycpt_regions:
   - Mexico
 regions:
   - name: Global
-    subx:  { lon: [0, 360], lat: [-60, 80] }
-    pycpt: { lon: [-180, 180], lat: [-60, 80] }
+    subx:  { lon: [0, 360], lat: [-90, 90] }
+    pycpt: { lon: [-180, 180], lat: [-90, 90] }
+  - name: NorthAmerica
+    subx:  { lon: [190, 305], lat: [15, 75] }
+    pycpt: { lon: [-170, -55], lat: [15, 75] }
   - name: Venezuela
     subx:  { lon: [287, 300], lat: [0, 13] }
     pycpt: { lon: [-60, -73], lat: [0, 13] }

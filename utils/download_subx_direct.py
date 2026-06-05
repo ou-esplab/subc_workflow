@@ -473,6 +473,489 @@ def _download_file(source_url: str, destination: Path, ftp_email: str) -> None:
     raise RuntimeError(f"Unsupported source URL: {source_url}")
 
 
+# ── ESRL-specific download helpers ────────────────────────────────────────────
+
+# Single-level variables: SubX var name → ESRL FTP filename prefix.
+_ESRL_VAR_PREFIX: Dict[str, str] = {
+    "pr":   "pr_sfc",
+    "rlut": "rlut_toa",
+    "tas":  "tas_2m",
+    "ts":   "ts_sfc",
+    "psl":  "psl_sfc",
+}
+
+# Multi-level variables: SubX var → ordered list of (pressure_hPa, filename_prefix).
+# Order matches the P coordinate in the primary iridl files.
+_ESRL_VAR_LEVELS: Dict[str, List[Tuple[int, str]]] = {
+    "zg": [(850, "zg_850"), (500, "zg_500"), (200, "zg_200"), (50, "zg_50"), (30, "zg_30"), (10, "zg_10")],
+    "ua": [(850, "ua_850"), (200, "ua_200"), (100, "ua_100"), (50, "ua_50"), (30, "ua_30"), (10, "ua_10")],
+    "va": [(850, "va_850"), (200, "va_200"), (100, "va_100"), (50, "va_50"), (30, "va_30"), (10, "va_10")],
+}
+
+_ESRL_MEMBERS = ["m01", "m02", "m03", "m04"]
+
+
+def _esrl_date_str(init_date: str) -> str:
+    """Convert YYYYMMDD to ESRL FTP date token (e.g. '20260603' → '03jun2026')."""
+    return datetime.strptime(init_date, "%Y%m%d").strftime("%d%b%Y").lower()
+
+
+def _list_esrl_dates(ftp_url: str, ftp_email: str, var: str) -> List[str]:
+    """Return available init dates for a variable on the ESRL FTP, newest first."""
+    # Use the first level prefix as the sentinel for multi-level vars
+    if var in _ESRL_VAR_LEVELS:
+        sentinel_prefix = _ESRL_VAR_LEVELS[var][0][1].lower()
+    else:
+        sentinel_prefix = _ESRL_VAR_PREFIX.get(var, "").lower()
+    if not sentinel_prefix:
+        return []
+    entries = _ftp_list(ftp_url, ftp_email)
+    dates: set = set()
+    for entry in entries:
+        name = entry.name.lower()
+        # Match only member-01 sentinel to avoid duplicates: {prefix}_FIM_*_m01.nc
+        if not (name.startswith(sentinel_prefix + "_fim_") and name.endswith("_m01.nc")):
+            continue
+        for d in _extract_dates(entry.name):
+            dates.add(d)
+    return sorted(dates, reverse=True)
+
+
+def _download_esrl_to_subx(
+    ftp_url: str,
+    ftp_email: str,
+    var: str,
+    init_date: str,
+    out_file: Path,
+) -> bool:
+    """Download all 4 ESRL ensemble member files, merge into SubX format, save.
+
+    Output dimensions: (S: 1, M: 4, L: 32, Y: 181, X: 360)
+    Lead coordinate L: float days offset from init date (e.g. -0.5, 0.5, … 30.5)
+    """
+    import numpy as np
+    import pandas as pd
+    import xarray as xr
+
+    is_multilevel = var in _ESRL_VAR_LEVELS
+    var_prefix = _ESRL_VAR_PREFIX.get(var)
+    if not is_multilevel and var_prefix is None:
+        print(f"[DIRECT][ESRL] Variable '{var}' not available on ESRL FTP; skipping.")
+        return False
+
+    esrl_date = _esrl_date_str(init_date)
+    init_ts = pd.Timestamp(init_date)
+    parsed = urlparse(ftp_url)
+    base_path = parsed.path.rstrip("/")
+
+    member_arrays: List = []
+    lead_days_ref: Optional[np.ndarray] = None  # pin L to member-1 values
+
+    def _fetch_one(prefix: str, member: str, tmpdir: str) -> "xr.Dataset":
+        """Download one per-member file and return as an open dataset."""
+        fname = f"{prefix}_FIM_{esrl_date}_00z_d01_d32_{member}.nc"
+        remote_path = f"{base_path}/{fname}"
+        tmp_file = Path(tmpdir) / fname
+        print(f"[DIRECT][ESRL] Downloading ftp://{parsed.hostname}{remote_path}")
+        ftp = FTP(parsed.hostname, timeout=60)
+        try:
+            _ftp_login_with_fallback(ftp, ftp_email)
+            with open(tmp_file, "wb") as f:
+                ftp.retrbinary(f"RETR {remote_path}", f.write)
+        except Exception as exc:
+            raise RuntimeError(f"FTP download failed for {fname}: {exc}") from exc
+        finally:
+            try:
+                ftp.quit()
+            except Exception:
+                pass
+        # ESRL uses Julian calendar; decode manually to avoid cftime issues
+        return xr.open_dataset(tmp_file, decode_times=False)
+
+    def _lead_days_from_ds(ds: "xr.Dataset") -> "np.ndarray":
+        time_units = ds["time"].attrs.get("units", "")
+        m = re.match(r"days since (.+)", time_units.strip())
+        if not m:
+            raise ValueError(f"Unrecognised ESRL time units: {time_units!r}")
+        base_time = pd.Timestamp(m.group(1))
+        raw_days = ds["time"].values.astype(float)
+        return np.array(
+            [(base_time + pd.Timedelta(days=float(d)) - init_ts).total_seconds() / 86400.0
+             for d in raw_days],
+            dtype=np.float32,
+        )
+
+    def _extract_var(ds: "xr.Dataset", fname: str) -> "xr.DataArray":
+        if var in ds:
+            return ds[var]
+        if "air_temperature" in ds:
+            print(f"[DIRECT][ESRL] Renaming 'air_temperature' -> '{var}' in {fname}")
+            return ds["air_temperature"]
+        raise KeyError(
+            f"Neither '{var}' nor 'air_temperature' found in {fname}. "
+            f"Available: {list(ds.data_vars)}"
+        )
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        for m_idx, member in enumerate(_ESRL_MEMBERS, start=1):
+            try:
+                if is_multilevel:
+                    # Download one file per pressure level, stack into P dim
+                    level_arrays: List = []
+                    for p_val, prefix in _ESRL_VAR_LEVELS[var]:
+                        ds = _fetch_one(prefix, member, tmpdir)
+                        if lead_days_ref is None:
+                            lead_days_ref = _lead_days_from_ds(ds)
+                        da_lev = (
+                            _extract_var(ds, f"{prefix}_FIM_{esrl_date}_00z_d01_d32_{member}.nc")
+                            .rename({"time": "L", "lat": "Y", "lon": "X"})
+                            .assign_coords(L=lead_days_ref)
+                        )
+                        da_lev["L"].attrs["units"] = "days"
+                        da_lev = da_lev.expand_dims(P=[p_val])
+                        level_arrays.append(da_lev)
+                        ds.close()
+                    da_member = xr.concat(level_arrays, dim="P").expand_dims(M=[m_idx])
+                else:
+                    # Single-level variable
+                    ds = _fetch_one(var_prefix, member, tmpdir)
+                    if lead_days_ref is None:
+                        lead_days_ref = _lead_days_from_ds(ds)
+                    fname = f"{var_prefix}_FIM_{esrl_date}_00z_d01_d32_{member}.nc"
+                    da_member = (
+                        _extract_var(ds, fname)
+                        .rename({"time": "L", "lat": "Y", "lon": "X"})
+                        .assign_coords(L=lead_days_ref)
+                    )
+                    da_member["L"].attrs["units"] = "days"
+                    da_member = da_member.expand_dims(M=[m_idx])
+                    ds.close()
+            except Exception as exc:
+                print(f"[DIRECT][ESRL][WARN] Failed for member {member}: {exc}", file=sys.stderr)
+                return False
+            member_arrays.append(da_member)
+
+        combined = xr.concat(member_arrays, dim="M")
+        combined = combined.expand_dims(S=[np.datetime64(init_ts, "ns")])
+        ds_out = combined.to_dataset(name=var)
+
+        out_file.parent.mkdir(parents=True, exist_ok=True)
+        tmp = out_file.with_suffix(".tmp.nc")
+        ds_out.to_netcdf(tmp)
+        tmp.rename(out_file)
+
+    return True
+
+
+# ── end ESRL helpers ───────────────────────────────────────────────────────────
+
+
+# ── GMAO-specific download helpers ────────────────────────────────────────────
+# GMAO file pattern: {prefix}_GMAOGEOS_{ddmonyyyy}_00z_d01_d45_{member}.nc
+# Same per-member structure as ESRL; 4 members (m01-m04).
+
+_GMAO_VAR_PREFIX: Dict[str, str] = {
+    "pr":   "pr_sfc",
+    "rlut": "rlut_toa",
+    "tas":  "tas_2m",
+    "ts":   "ts_sfc",
+}
+
+_GMAO_VAR_LEVELS: Dict[str, List[Tuple[int, str]]] = {
+    "ua": [(200, "ua_200"), (850, "ua_850")],
+    "va": [(200, "va_200"), (850, "va_850")],
+    "zg": [(200, "zg_200"), (500, "zg_500")],
+}
+
+_GMAO_MEMBERS = ["m01", "m02", "m03", "m04"]
+
+
+def _list_gmao_dates(http_url: str, var: str) -> List[str]:
+    """Return available init dates for a variable on the GMAO HTTP server, newest first."""
+    if var in _GMAO_VAR_LEVELS:
+        sentinel_prefix = _GMAO_VAR_LEVELS[var][0][1].lower()
+    else:
+        sentinel_prefix = _GMAO_VAR_PREFIX.get(var, "").lower()
+    if not sentinel_prefix:
+        return []
+    entries = _http_list(http_url, depth=1)
+    dates: set = set()
+    for entry in entries:
+        name = entry.name.lower()
+        if not (name.startswith(sentinel_prefix + "_gmaogeos_") and name.endswith("_m01.nc")):
+            continue
+        for d in _extract_dates(entry.name):
+            dates.add(d)
+    return sorted(dates, reverse=True)
+
+
+def _download_gmao_to_subx(
+    http_url: str,
+    ftp_email: str,
+    var: str,
+    init_date: str,
+    out_file: Path,
+) -> bool:
+    """Download all 4 GMAO ensemble member files, merge into SubX format.
+
+    Output dimensions: (S: 1, M: 4, [P: N,] L: 45, Y: 181, X: 360)
+    """
+    import numpy as np
+    import pandas as pd
+    import xarray as xr
+
+    is_multilevel = var in _GMAO_VAR_LEVELS
+    var_prefix = _GMAO_VAR_PREFIX.get(var)
+    if not is_multilevel and var_prefix is None:
+        print(f"[DIRECT][GMAO] Variable '{var}' not available on GMAO server; skipping.")
+        return False
+
+    # GMAO uses the same date-string format as ESRL: ddmonyyyy
+    gmao_date = _esrl_date_str(init_date)
+    init_ts = pd.Timestamp(init_date)
+    base_url = http_url.rstrip("/")
+
+    member_arrays: List = []
+    lead_days_ref: Optional[np.ndarray] = None
+
+    def _fetch_gmao(prefix: str, member: str, tmpdir: str) -> "xr.Dataset":
+        fname = f"{prefix}_GMAOGEOS_{gmao_date}_00z_d01_d45_{member}.nc"
+        url = f"{base_url}/{fname}"
+        tmp_file = Path(tmpdir) / fname
+        print(f"[DIRECT][GMAO] Downloading {url}")
+        _download_file(url, tmp_file, ftp_email)
+        return xr.open_dataset(tmp_file)
+
+    def _lead_days_gmao(ds: "xr.Dataset") -> "np.ndarray":
+        time_vals = pd.DatetimeIndex(ds["time"].values)
+        return np.array(
+            [(t - init_ts).total_seconds() / 86400.0 for t in time_vals],
+            dtype=np.float32,
+        )
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        for m_idx, member in enumerate(_GMAO_MEMBERS, start=1):
+            try:
+                if is_multilevel:
+                    level_arrays: List = []
+                    for p_val, prefix in _GMAO_VAR_LEVELS[var]:
+                        ds = _fetch_gmao(prefix, member, tmpdir)
+                        if lead_days_ref is None:
+                            lead_days_ref = _lead_days_gmao(ds)
+                        # Drop auxiliary bound variables and the orphan bnds dim
+                        drop = [v for v in ds.data_vars if "bnds" in v.lower()]
+                        ds = ds.drop_vars(drop, errors="ignore")
+                        da_lev = (
+                            ds[var]
+                            .drop_vars(["lev", "lev_bnds"], errors="ignore")
+                            .rename({"time": "L", "lat": "Y", "lon": "X"})
+                            .assign_coords(L=lead_days_ref)
+                        )
+                        da_lev["L"].attrs["units"] = "days"
+                        da_lev = da_lev.expand_dims(P=[p_val])
+                        level_arrays.append(da_lev)
+                        ds.close()
+                    da_member = xr.concat(level_arrays, dim="P").expand_dims(M=[m_idx])
+                else:
+                    ds = _fetch_gmao(var_prefix, member, tmpdir)
+                    if lead_days_ref is None:
+                        lead_days_ref = _lead_days_gmao(ds)
+                    drop = [v for v in ds.data_vars if "bnds" in v.lower()]
+                    ds = ds.drop_vars(drop, errors="ignore")
+                    da_member = (
+                        ds[var]
+                        .rename({"time": "L", "lat": "Y", "lon": "X"})
+                        .assign_coords(L=lead_days_ref)
+                    )
+                    da_member["L"].attrs["units"] = "days"
+                    da_member = da_member.expand_dims(M=[m_idx])
+                    ds.close()
+            except Exception as exc:
+                print(f"[DIRECT][GMAO][WARN] Failed for member {member}: {exc}", file=sys.stderr)
+                return False
+            member_arrays.append(da_member)
+
+        combined = xr.concat(member_arrays, dim="M")
+        combined = combined.expand_dims(S=[np.datetime64(init_ts, "ns")])
+        ds_out = combined.to_dataset(name=var)
+
+        out_file.parent.mkdir(parents=True, exist_ok=True)
+        tmp = out_file.with_suffix(".tmp.nc")
+        ds_out.to_netcdf(tmp)
+        tmp.rename(out_file)
+
+    return True
+
+# ── end GMAO helpers ───────────────────────────────────────────────────────────
+
+
+# ── ECCC conversion helper ─────────────────────────────────────────────────────
+# ECCC provides one tar per member (m00-m20 = 21 members) per init date.
+# Each tar contains all variables; init date is in the time coordinate's
+# reference_date attribute as "YYYY.MM.DD HH:MM:SS UTC".
+
+_ECCC_ALL_MEMBERS = [f"m{i:02d}" for i in range(21)]
+
+
+def _download_eccc_members_to_subx(
+    http_url: str,
+    ftp_email: str,
+    var: str,
+    init_date: str,
+    out_file: Path,
+    eccc_members: List[str],
+) -> bool:
+    """Download all ECCC member tars, extract var, convert and merge into SubX format.
+
+    Output dimensions: (S: 1, M: N, L: 39, Y: 181, X: 360)
+    """
+    import numpy as np
+    import pandas as pd
+    import xarray as xr
+
+    init_ts = pd.Timestamp(init_date)
+    date_token = f"{init_date}00"   # YYYYMMDD → YYYYMMDDH (ECCC uses 00z suffix)
+
+    entries = _http_list_eccc(http_url, [init_date])
+    tar_map = {e.name: e for e in entries if e.name.endswith(".tar")}
+
+    if not tar_map:
+        print(f"[DIRECT][ECCC] No tar files found for {init_date} at {http_url}")
+        return False
+
+    member_arrays: List = []
+    lead_days_ref: Optional[np.ndarray] = None
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        for m_idx, member in enumerate(eccc_members, start=1):
+            tar_name = f"subX_realtime_ECCC_{date_token}_{member}.tar"
+            entry = tar_map.get(tar_name)
+            if entry is None:
+                print(f"[DIRECT][ECCC][WARN] Tar not found: {tar_name}")
+                continue
+
+            tar_tmp = Path(tmpdir) / tar_name
+            nc_tmp = Path(tmpdir) / f"{var}_{member}.nc"
+
+            print(f"[DIRECT][ECCC] Downloading {entry.url}")
+            try:
+                _download_file(entry.url, tar_tmp, ftp_email)
+                ok = _extract_from_tar(tar_tmp, nc_tmp, var, [member])
+                if not ok:
+                    print(f"[DIRECT][ECCC][WARN] '{var}' not in {tar_name}")
+                    continue
+            except Exception as exc:
+                print(f"[DIRECT][ECCC][WARN] Failed {tar_name}: {exc}", file=sys.stderr)
+                continue
+
+            ds = xr.open_dataset(nc_tmp)
+
+            # Init date from reference_date attr (format "2026.06.04 00:00:00 UTC")
+            ref_str = ds["time"].attrs.get("reference_date", "")
+            ref_ts = pd.Timestamp(ref_str.replace(" UTC", "")) if ref_str else init_ts
+
+            time_vals = pd.DatetimeIndex(ds["time"].values)
+            lead_days = np.array(
+                [(t - ref_ts).total_seconds() / 86400.0 for t in time_vals],
+                dtype=np.float32,
+            )
+            if lead_days_ref is None:
+                lead_days_ref = lead_days
+
+            da_member = (
+                ds[var]
+                .rename({"time": "L", "latitude": "Y", "longitude": "X"})
+                .assign_coords(L=lead_days_ref)
+            )
+            da_member["L"].attrs["units"] = "days"
+            da_member = da_member.expand_dims(M=[m_idx])
+            member_arrays.append(da_member)
+            ds.close()
+
+    if not member_arrays:
+        print(f"[DIRECT][ECCC] No members extracted for {var} {init_date}")
+        return False
+
+    import numpy as np
+    import pandas as pd
+    import xarray as xr
+
+    combined = xr.concat(member_arrays, dim="M")
+    combined = combined.expand_dims(S=[np.datetime64(init_ts, "ns")])
+    ds_out = combined.to_dataset(name=var)
+
+    out_file.parent.mkdir(parents=True, exist_ok=True)
+    tmp = out_file.with_suffix(".tmp.nc")
+    ds_out.to_netcdf(tmp)
+    tmp.rename(out_file)
+    return True
+
+# ── end ECCC helpers ───────────────────────────────────────────────────────────
+
+
+# ── RSMAS format conversion ────────────────────────────────────────────────────
+# RSMAS files use uppercase dim names (TIME, LAT, LON), cftime NoLeap calendar,
+# uppercase variable names (PR, TS, etc.), and a lev_p coordinate for pressure.
+
+def _convert_rsmas_to_subx(path: Path, var: str, init_date: str) -> None:
+    """Convert a raw RSMAS file to SubX format (S, M, [P,] L, Y, X) in-place."""
+    import numpy as np
+    import pandas as pd
+    import xarray as xr
+
+    init_ts = pd.Timestamp(init_date)
+    ds = xr.open_dataset(path)
+
+    # TIME uses cftime NoLeap; convert to plain timestamps
+    time_vals = ds["TIME"].values
+    if hasattr(time_vals[0], "year"):
+        valid_times = [
+            pd.Timestamp(t.year, t.month, t.day, t.hour, t.minute, t.second)
+            for t in time_vals
+        ]
+    else:
+        valid_times = list(pd.DatetimeIndex(time_vals))
+
+    lead_days = np.array(
+        [(v - init_ts).total_seconds() / 86400.0 for v in valid_times],
+        dtype=np.float32,
+    )
+
+    # Locate variable (RSMAS uses uppercase: PR → pr)
+    var_in_file = next(
+        (v for v in ds.data_vars if v.lower() == var.lower() and "bnd" not in v.lower()),
+        None,
+    )
+    if var_in_file is None:
+        print(f"[DIRECT][RSMAS][WARN] '{var}' not found in {path.name}; available: {list(ds.data_vars)}")
+        return
+
+    # Drop bounds variables and their dimension
+    drop = [v for v in ds.data_vars if "bnd" in v.lower() or "bound" in v.lower()]
+    ds = ds.drop_vars(drop, errors="ignore")
+
+    lev_name = next((c for c in ["lev_p", "lev", "plev"] if c in ds.coords), None)
+    rename_map = {"TIME": "L", "LAT": "Y", "LON": "X"}
+    if lev_name:
+        rename_map[lev_name] = "P"
+
+    da = ds[var_in_file].rename(rename_map).assign_coords(L=lead_days)
+    da["L"].attrs["units"] = "days"
+    if "P" in da.coords:
+        da = da.assign_coords(P=da["P"].values.astype(int))
+
+    da = da.expand_dims(S=[np.datetime64(init_ts, "ns")], M=[1])
+    da.name = var
+    ds_out = da.to_dataset()
+    ds.close()
+
+    tmp = path.with_suffix(".tmp.nc")
+    ds_out.to_netcdf(tmp)
+    tmp.rename(path)
+
+# ── end RSMAS helpers ──────────────────────────────────────────────────────────
+
+
 def _provider_from_source(source: str, group: str, server_model: str) -> str:
     source_l = source.strip().lower()
     if source_l.startswith("direct_"):
@@ -521,6 +1004,87 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         f"fcst={args.fcst} lookback_days={lookback_days}"
     )
 
+    target_dir = Path(args.target_dir)
+    downloaded = 0
+
+    # ── Per-member download+merge paths ───────────────────────────────────────
+    if provider == "gmao":
+        available = _list_gmao_dates(provider_url, args.var)
+        if not available:
+            print(f"[DIRECT][GMAO] No files found for var={args.var} at {provider_url}")
+            return 0
+        date_window_set = set(date_window)
+        matching = [d for d in available if d in date_window_set]
+        if not matching:
+            print(
+                f"[DIRECT][GMAO] No files in lookback window for var={args.var} "
+                f"(window={date_window[-1]}..{date_window[0]})"
+            )
+            return 0
+        for init_date in matching:
+            out_file = target_dir / f"{args.var}_{args.group}-{args.local_model}_{init_date}.daily.nc"
+            if out_file.exists():
+                print(f"[DIRECT] Exists, skipping: {out_file}")
+                continue
+            ok = _download_gmao_to_subx(provider_url, ftp_email, args.var, init_date, out_file)
+            if ok:
+                downloaded += 1
+        print(f"[DIRECT] Completed provider={provider} downloaded={downloaded}")
+        return 0
+
+    if provider == "eccc":
+        entries = _list_entries(provider_url, ftp_email, provider, date_window)
+        if not entries:
+            print(f"[DIRECT][WARN] No entries discovered at provider URL: {provider_url}")
+            return 0
+        dates_with_tars = sorted(
+            {d for e in entries if e.name.endswith(".tar")
+             for d in _extract_dates(e.name)},
+            reverse=True,
+        )
+        date_window_set = set(date_window)
+        matching = [d for d in dates_with_tars if d in date_window_set]
+        if not matching:
+            print(f"[DIRECT][ECCC] No tar files in lookback window for {args.var}")
+            return 0
+        for init_date in matching:
+            out_file = target_dir / f"{args.var}_{args.group}-{args.local_model}_{init_date}.daily.nc"
+            if out_file.exists():
+                print(f"[DIRECT] Exists, skipping: {out_file}")
+                continue
+            ok = _download_eccc_members_to_subx(
+                provider_url, ftp_email, args.var, init_date, out_file, eccc_members
+            )
+            if ok:
+                downloaded += 1
+        print(f"[DIRECT] Completed provider={provider} downloaded={downloaded}")
+        return 0
+
+    if provider == "esrl":
+        available = _list_esrl_dates(provider_url, ftp_email, args.var)
+        if not available:
+            print(f"[DIRECT][ESRL] No files found for var={args.var} at {provider_url}")
+            return 0
+        date_window_set = set(date_window)
+        matching = [d for d in available if d in date_window_set]
+        if not matching:
+            print(
+                f"[DIRECT][ESRL] No files in lookback window for var={args.var} "
+                f"(window={date_window[-1]}..{date_window[0]})"
+            )
+            return 0
+        for init_date in matching:
+            out_file = target_dir / f"{args.var}_{args.group}-{args.local_model}_{init_date}.daily.nc"
+            if out_file.exists():
+                print(f"[DIRECT] Exists, skipping: {out_file}")
+                continue
+            ok = _download_esrl_to_subx(provider_url, ftp_email, args.var, init_date, out_file)
+            if ok:
+                downloaded += 1
+        print(f"[DIRECT] Completed provider={provider} downloaded={downloaded}")
+        return 0
+    # ── end ESRL ───────────────────────────────────────────────────────────────
+
     entries = _list_entries(provider_url, ftp_email, provider, date_window)
     if not entries:
         print(f"[DIRECT][WARN] No entries discovered at provider URL: {provider_url}")
@@ -534,8 +1098,6 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         )
         return 0
 
-    target_dir = Path(args.target_dir)
-    downloaded = 0
     seen_dates = set()
     for candidate in candidates:
         init_date = candidate.init_date
@@ -561,6 +1123,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         try:
             ok = _materialize_candidate(candidate, out_file, ftp_email, args.var, eccc_members)
             if ok:
+                if provider == "rsmas":
+                    _convert_rsmas_to_subx(out_file, args.var, init_date)
                 downloaded += 1
             else:
                 print(
