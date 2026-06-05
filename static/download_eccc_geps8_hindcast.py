@@ -312,6 +312,8 @@ def main() -> int:
                     help="Seconds between hindcast years within one forecast date (default: 5)")
     ap.add_argument("--sleep-dates", type=float, default=15.0,
                     help="Seconds between forecast dates (default: 15)")
+    ap.add_argument("--max-dates", type=int, default=None,
+                    help="Stop after this many forecast dates (for testing)")
     args = ap.parse_args()
 
     with open(args.config, encoding="utf-8") as f:
@@ -333,6 +335,8 @@ def main() -> int:
     print(f"Server has {len(all_dates)} forecast dates: {all_dates[0]} to {all_dates[-1]}")
 
     selected = [d for d in all_dates if int(d[4:6]) in target_months]
+    if args.max_dates:
+        selected = selected[: args.max_dates]
     if not selected:
         print(f"[WARN] No dates found for months {sorted(target_months)}")
         return 0
