@@ -88,6 +88,10 @@ def _preproc_rt_root(ds: xr.Dataset, var: str, lev: str) -> xr.Dataset:
     if "L" in ds.dims:
         ds = ds.rename({"L": "time"})
         ds["time"] = np.arange(len(ds["time"]))
+    # Rename Y/X → lat/lon to match what forecast.py expects after its own rename
+    rename = {k: v for k, v in {"Y": "lat", "X": "lon"}.items() if k in ds.dims}
+    if rename:
+        ds = ds.rename(rename)
     return ds
 
 
