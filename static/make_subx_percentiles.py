@@ -230,9 +230,9 @@ def compute_percentiles(
             n_wrote += 1
             continue
 
-        # Concat lazily along 'sample', then compute quantile in one dask call.
-        # skipna=True handles any all-NaN files without needing per-file checks.
-        combined = xr.concat(dslist, dim="sample")
+        # Concat lazily along 'sample', rechunk so quantile sees one contiguous
+        # chunk on that axis, then compute. skipna=True handles any NaN files.
+        combined = xr.concat(dslist, dim="sample").chunk({"sample": -1})
         n_leads = combined.sizes["L"]
         pct_da = (
             combined
