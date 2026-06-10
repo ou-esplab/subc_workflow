@@ -145,7 +145,6 @@ def compute_percentiles(
     calendardates: dict[str, list[xr.Dataset]] = {}
     n_loaded = 0
     n_missing = 0
-    n_skipped = 0
 
     print(f"[{model_id}] Loading hindcast {var} for {len(years)} years...")
     for year in tqdm(years, desc="Years"):
@@ -164,17 +163,11 @@ def compute_percentiles(
                     n_missing += 1
                     continue
 
-                ds = xr.open_dataset(path, chunks="auto")
+                ds = xr.open_dataset(path, chunks={"L": -1})
 
                 # Select pressure level when var has a P dimension (e.g. zg)
                 if _is_pressure_level(lev) and "P" in ds.dims:
                     ds = ds.sel(P=int(lev))
-
-                # Skip entirely-NaN files
-                if ds[var].isnull().all().compute().item():
-                    ds.close()
-                    n_skipped += 1
-                    continue
 
                 ds = _to_rate(ds, var)    # convert accumulated pr to rate (e.g. EMC kg m-2 → kg m-2 s-1)
                 ds = _fold_s_into_m(ds)  # fold S>1 sub-daily inits into M (e.g. CFSv2 S=4)
@@ -182,13 +175,14 @@ def compute_percentiles(
                 mmdd = ts.strftime("%m-%d")
                 # Expand into individual members so concat across years never sees
                 # conflicting M sizes (e.g. NCEP files with S=4 vs S=5).
+                # Keep as lazy dask arrays — skipna=True in quantile handles NaN files.
                 n_members = ds.sizes.get("M", 1)
                 for i in range(n_members):
-                    member_ds = ds.isel(M=i, drop=True) if "M" in ds.dims else ds
-                    calendardates.setdefault(mmdd, []).append(member_ds)
+                    member_da = ds[var].isel(M=i, drop=True) if "M" in ds.dims else ds[var]
+                    calendardates.setdefault(mmdd, []).append(member_da)
                 n_loaded += 1
 
-    print(f"  loaded={n_loaded}  missing={n_missing}  skipped_nan={n_skipped}")
+    print(f"  loaded={n_loaded}  missing={n_missing}")
     print(f"  grouped into {len(calendardates)} calendar days")
 
     if not calendardates:
@@ -236,23 +230,19 @@ def compute_percentiles(
             n_wrote += 1
             continue
 
-        # Each element is already a single member (no M dim); concat along 'sample'.
-        combined = xr.concat(dslist, dim="sample").compute()
-
+        # Concat lazily along 'sample', then compute quantile in one dask call.
+        # skipna=True handles any all-NaN files without needing per-file checks.
+        combined = xr.concat(dslist, dim="sample")
         n_leads = combined.sizes["L"]
-        lead_arrays = []
-
-        for i in range(n_leads):
-            var_data = combined.isel(L=i)[var]
-            pct_da = (
-                var_data
-                .quantile(quantile, dim="sample", skipna=True)
-                .drop_vars("quantile")
-            )
-            lead_arrays.append(pct_da)
+        pct_da = (
+            combined
+            .quantile(quantile, dim="sample", skipna=True)
+            .drop_vars("quantile")
+            .compute()
+        )
 
         # Assemble output: dims (month_day: 1, L, Y, X)
-        da = xr.concat(lead_arrays, dim="L").assign_coords(L=list(range(n_leads)))
+        da = pct_da.assign_coords(L=list(range(n_leads)))
         da = da.expand_dims(month_day=[mmdd])
         ds_out = da.to_dataset(name=var)
 
