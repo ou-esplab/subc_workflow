@@ -100,6 +100,16 @@ def _is_pressure_level(lev: str) -> bool:
         return False
 
 
+def _doy_from_mmdd(mmdd: str) -> int:
+    """Day-of-year for MM-DD using a fixed leap year so Feb 29 is valid."""
+    return pd.Timestamp(f"2000-{mmdd}").day_of_year
+
+
+def _circular_day_distance(d1: int, d2: int) -> int:
+    diff = abs(d1 - d2)
+    return min(diff, 366 - diff)
+
+
 def compute_percentiles(
     rt_root: str,
     hc_root: str,
@@ -109,6 +119,7 @@ def compute_percentiles(
     lev: str,
     percentile: int,
     years: list[int],
+    window: int,
     overwrite: bool,
     dry_run: bool,
 ) -> int:
@@ -128,6 +139,9 @@ def compute_percentiles(
         out_dir.mkdir(parents=True, exist_ok=True)
 
     # ── 1. Load hindcast files and group by calendar MM-DD ────────────────────
+    # Each entry: exact MMDD of the hindcast init date.
+    # Phase 2 then pools samples from ±window days around each target MMDD,
+    # matching the effective ±15-day window used by the climatology smoothing.
     calendardates: dict[str, list[xr.Dataset]] = {}
     n_loaded = 0
     n_missing = 0
@@ -181,25 +195,46 @@ def compute_percentiles(
         print("[ERROR] No data loaded — aborting.")
         return 1
 
+    # Precompute DOY for each loaded MMDD to speed up window lookups.
+    loaded_doy: dict[str, int] = {mmdd: _doy_from_mmdd(mmdd) for mmdd in calendardates}
+
     # ── 2. Compute percentile per MM-DD and write output ──────────────────────
+    # Iterate over all 366 calendar days. For each, pool samples from all
+    # loaded MMDDs within ±window days (circular calendar distance).
+    all_target_mmdd: list[str] = []
+    for m in range(1, 13):
+        for d in range(1, 32):
+            try:
+                all_target_mmdd.append(pd.Timestamp(f"2000-{m:02d}-{d:02d}").strftime("%m-%d"))
+            except ValueError:
+                continue
+
     n_wrote = 0
     n_existed = 0
 
-    print(f"\n[{model_id}] Computing {percentile}th percentile and writing output...")
-    for mmdd in tqdm(sorted(calendardates.keys()), desc="MM-DD"):
-        mmdd_str = mmdd.replace("-", "")
+    print(f"\n[{model_id}] Computing {percentile}th percentile (window=±{window}d) and writing output...")
+    for target_mmdd in tqdm(all_target_mmdd, desc="MM-DD"):
+        mmdd_str = target_mmdd.replace("-", "")
         out_file = out_dir / f"{var}_{group}-{model}_{mmdd_str}.{percentile}p.nc"
 
         if out_file.exists() and not overwrite:
             n_existed += 1
             continue
 
+        # Pool samples from all loaded MMDDs within ±window days.
+        target_doy = _doy_from_mmdd(target_mmdd)
+        dslist = []
+        for src_mmdd, members in calendardates.items():
+            if _circular_day_distance(loaded_doy[src_mmdd], target_doy) <= window:
+                dslist.extend(members)
+
+        if not dslist:
+            continue  # no data within window for this MMDD
+
         if dry_run:
-            print(f"  [DRY-RUN] {out_file}")
+            print(f"  [DRY-RUN] {out_file}  (n_samples={len(dslist)})")
             n_wrote += 1
             continue
-
-        dslist = calendardates[mmdd]
 
         # Each element is already a single member (no M dim); concat along 'sample'.
         combined = xr.concat(dslist, dim="sample").compute()
@@ -246,6 +281,9 @@ def main() -> int:
                     help="Level suffix used in output directory (e.g. sfc, 2m, 500)")
     ap.add_argument("--percentile", type=int, default=95,
                     help="Percentile value 0-100 (default: 95)")
+    ap.add_argument("--window",     type=int, default=15,
+                    help="Half-width in days for pooling nearby hindcast dates (default: 15, "
+                         "matching the ±15-day effective window used by the climatology)")
     ap.add_argument("--years",      type=int, nargs="+", default=None,
                     help=f"Hindcast years to use (default: {DEFAULT_YEARS[0]}-{DEFAULT_YEARS[-1]})")
     ap.add_argument("--overwrite",  action="store_true",
@@ -280,6 +318,7 @@ def main() -> int:
         var=args.var,
         lev=args.lev,
         percentile=args.percentile,
+        window=args.window,
         years=years,
         overwrite=args.overwrite,
         dry_run=args.dry_run,
