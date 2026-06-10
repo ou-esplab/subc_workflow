@@ -44,7 +44,7 @@ import yaml
 from tqdm import tqdm
 
 
-DEFAULT_YEARS = list(range(1999, 2016))
+DEFAULT_YEARS = list(range(1999, 2021))
 
 
 def _load_cfg(config_path: str) -> dict:
@@ -57,6 +57,39 @@ def _parse_model(model_id: str) -> tuple[str, str]:
         raise ValueError(f"--model must be GROUP-MODEL format (e.g. ECCC-GEPS8), got: {model_id!r}")
     group, model = model_id.split("-", 1)
     return group, model
+
+
+def _to_rate(ds: xr.Dataset, var: str) -> xr.Dataset:
+    """Convert accumulated precipitation to kg m-2 s-1 if needed (e.g. EMC stores kg m-2)."""
+    if var != "pr":
+        return ds
+    units = ds[var].attrs.get("units", "").lower().replace(" ", "")
+    is_rate = any(t in units for t in ["s-1", "/s", "s^-1"])
+    if not is_rate and units:
+        ds[var] = ds[var] / 86400.0
+        ds[var].attrs["units"] = "kg m-2 s-1"
+    return ds
+
+
+def _fold_s_into_m(ds: xr.Dataset) -> xr.Dataset:
+    """Treat each S sub-daily init as an additional ensemble member.
+
+    S=1: drop S (existing behaviour).
+    S>1 (e.g. CFSv2 00z/06z/12z/18z): fold into M so all S slots contribute
+    to the percentile sample pool as pseudo-members.
+    """
+    if "S" not in ds.dims:
+        return ds
+    if ds.sizes["S"] == 1:
+        return ds.isel(S=0, drop=True)
+    # Assign integer coords so concat across years won't try to align datetimes
+    ds = ds.assign_coords(S=np.arange(ds.sizes["S"]))
+    if "M" in ds.dims:
+        ds = ds.assign_coords(M=np.arange(ds.sizes["M"]))
+        ds = ds.stack(_sm=("S", "M")).reset_index("_sm").rename({"_sm": "M"})
+    else:
+        ds = ds.rename({"S": "M"}).assign_coords(M=np.arange(ds.sizes["S"]))
+    return ds
 
 
 def _is_pressure_level(lev: str) -> bool:
@@ -129,11 +162,8 @@ def compute_percentiles(
                     n_skipped += 1
                     continue
 
-                # Drop S dim before concat so years stack cleanly on (year, M).
-                # Without this, xr.concat creates S=N_years and isel(S=0) later
-                # uses only the first year's data for the percentile.
-                if "S" in ds.dims and ds.sizes["S"] == 1:
-                    ds = ds.isel(S=0, drop=True)
+                ds = _to_rate(ds, var)    # convert accumulated pr to rate (e.g. EMC kg m-2 → kg m-2 s-1)
+                ds = _fold_s_into_m(ds)  # fold S>1 sub-daily inits into M (e.g. CFSv2 S=4)
 
                 mmdd = ts.strftime("%m-%d")
                 calendardates.setdefault(mmdd, []).append(ds)
