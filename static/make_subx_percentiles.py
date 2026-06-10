@@ -166,7 +166,12 @@ def compute_percentiles(
                 ds = _fold_s_into_m(ds)  # fold S>1 sub-daily inits into M (e.g. CFSv2 S=4)
 
                 mmdd = ts.strftime("%m-%d")
-                calendardates.setdefault(mmdd, []).append(ds)
+                # Expand into individual members so concat across years never sees
+                # conflicting M sizes (e.g. NCEP files with S=4 vs S=5).
+                n_members = ds.sizes.get("M", 1)
+                for i in range(n_members):
+                    member_ds = ds.isel(M=i, drop=True) if "M" in ds.dims else ds
+                    calendardates.setdefault(mmdd, []).append(member_ds)
                 n_loaded += 1
 
     print(f"  loaded={n_loaded}  missing={n_missing}  skipped_nan={n_skipped}")
@@ -196,28 +201,17 @@ def compute_percentiles(
 
         dslist = calendardates[mmdd]
 
-        # Stack all years and ensemble members into a single 'stacked' dim
-        combined = xr.concat(dslist, dim="year")
-        if "M" in combined.dims:
-            combined = combined.stack(stacked=("year", "M"))
-        else:
-            combined = combined.rename({"year": "stacked"})
-        combined = combined.reset_index("stacked").compute()
+        # Each element is already a single member (no M dim); concat along 'sample'.
+        combined = xr.concat(dslist, dim="sample").compute()
 
         n_leads = combined.sizes["L"]
         lead_arrays = []
 
         for i in range(n_leads):
             var_data = combined.isel(L=i)[var]
-            # Drop S coordinate/dim left over from SubX file convention
-            if "S" in var_data.dims:
-                var_data = var_data.isel(S=0, drop=True)
-            elif "S" in var_data.coords:
-                var_data = var_data.drop_vars("S")
-
             pct_da = (
                 var_data
-                .quantile(quantile, dim="stacked", skipna=True)
+                .quantile(quantile, dim="sample", skipna=True)
                 .drop_vars("quantile")
             )
             lead_arrays.append(pct_da)
