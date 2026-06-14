@@ -31,11 +31,11 @@ def _nearest_month_day_label(labels, init_mdy: str) -> str:
     if init_mdy in label_strs:
         return init_mdy
 
-    target = datetime.strptime(init_mdy, "%m-%d")
+    target = datetime.strptime("2000-" + init_mdy, "%Y-%m-%d")
 
     def score(lbl: str) -> int:
         try:
-            d = datetime.strptime(lbl, "%m-%d")
+            d = datetime.strptime("2000-" + lbl, "%Y-%m-%d")
             diff = abs((d - target).days)
             return min(diff, 366 - diff)
         except ValueError:
@@ -81,10 +81,10 @@ def nearest_mmdd_threshold(
         if mmdd_token == mmdd:
             return path
 
-    target = datetime.strptime(mmdd, "%m%d")
+    target = datetime.strptime("2000" + mmdd, "%Y%m%d")
 
     def score(mmdd_token: str) -> int:
-        d = datetime.strptime(mmdd_token, "%m%d")
+        d = datetime.strptime("2000" + mmdd_token, "%Y%m%d")
         diff = abs((d - target).days)
         return min(diff, 366 - diff)
 

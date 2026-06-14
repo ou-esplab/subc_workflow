@@ -28,7 +28,8 @@ ingest:
   # Optional per-model source overrides using GROUP-MODEL keys.
   # Keep empty while downstream remains on IRIDL.
   # Supported values: iridl, direct, direct_esrl, direct_gmao, direct_eccc, direct_rsmas
-  model_source: {}
+  model_source:
+    ECCC-GEPS8: direct_eccc
   # Optional shadow ingest that runs in parallel and writes to a separate root.
   # This is used to validate direct-source ingest without changing downstream
   # stages that read from paths.rt_root.

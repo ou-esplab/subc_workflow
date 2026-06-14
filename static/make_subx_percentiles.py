@@ -142,7 +142,7 @@ def compute_percentiles(
     # Each entry: exact MMDD of the hindcast init date.
     # Phase 2 then pools samples from ±window days around each target MMDD,
     # matching the effective ±15-day window used by the climatology smoothing.
-    calendardates: dict[str, list[xr.Dataset]] = {}
+    calendardates: dict[str, list[xr.DataArray]] = {}
     n_loaded = 0
     n_missing = 0
 
@@ -243,7 +243,7 @@ def compute_percentiles(
 
         # Assemble output: dims (month_day: 1, L, Y, X)
         da = pct_da.assign_coords(L=list(range(n_leads)))
-        da = da.expand_dims(month_day=[mmdd])
+        da = da.expand_dims(month_day=[target_mmdd])
         ds_out = da.to_dataset(name=var)
 
         # Atomic write via temp file

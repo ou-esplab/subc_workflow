@@ -126,6 +126,53 @@ def _is_all_nan(path: str, var: str, lev: str) -> bool:
         return True
 
 
+def _open_full_hindcast(
+    hindcast_dir: str,
+    var: str,
+    lev: str,
+    start_year: int | None,
+    end_year: int | None,
+) -> tuple[xr.Dataset, list[str]]:
+    """Open full/ IRI hindcast emean files (alternative to rt_root for models
+    whose rt_root data is unusable, e.g. CFSv2 tas which is sea-ice only there).
+
+    Files are named like: {var_prefix}_{GROUP}-{MODEL}_{YYYYMMDD}.emean.daily.nc
+    Variable inside: {var} (same as requested, despite the filename prefix).
+    Dims: (time: N_leads, lat, lon) with time as datetime starting 1960-01-01.
+    """
+    all_files = sorted(glob.glob(os.path.join(hindcast_dir, "*.emean.daily.nc")))
+    if not all_files:
+        raise FileNotFoundError(f"No *.emean.daily.nc files found in {hindcast_dir}")
+
+    date_re = re.compile(r'_(\d{8})\.emean\.daily\.nc$')
+    dated = [(f, m.group(1)) for f in all_files if (m := date_re.search(f))]
+
+    years_all = [int(d[:4]) for _, d in dated]
+    sy = start_year if start_year is not None else min(years_all)
+    ey = end_year   if end_year   is not None else max(years_all)
+    dated = [(f, d) for f, d in dated if sy <= int(d[:4]) <= ey]
+    if not dated:
+        raise FileNotFoundError(f"No emean files in {hindcast_dir} for years {sy}–{ey}")
+
+    valid_files, dates = zip(*dated)
+    print(f"  Loading {len(valid_files)} emean files ({sy}–{ey}) from {hindcast_dir}...")
+
+    def _preproc(ds: xr.Dataset) -> xr.Dataset:
+        # Convert datetime lead coord to integer indices so concat is clean
+        ds["time"] = np.arange(len(ds["time"]))
+        return ds
+
+    ds = xr.open_mfdataset(
+        list(valid_files),
+        combine="nested",
+        concat_dim="init",
+        preprocess=_preproc,
+        parallel=False,
+    )
+    ds["init"] = pd.to_datetime(list(dates))
+    return ds, list(dates)
+
+
 def _open_rt_root_hindcast(
     rt_root: str,
     group: str,
@@ -215,6 +262,7 @@ def make_climo(
     start_year: int | None,
     end_year: int | None,
     overwrite: bool,
+    hindcast_dir: str | None = None,
 ) -> None:
     model_id = f"{group}-{model}"
     out_dir = Path(hc_root) / f"{var}{lev}" / "daily" / "climo" / model_id
@@ -222,7 +270,10 @@ def make_climo(
 
     print(f"\n[{model_id}] {var}{lev}")
 
-    ds, dates = _open_rt_root_hindcast(rt_root, group, model, var, lev, start_year, end_year)
+    if hindcast_dir:
+        ds, dates = _open_full_hindcast(hindcast_dir, var, lev, start_year, end_year)
+    else:
+        ds, dates = _open_rt_root_hindcast(rt_root, group, model, var, lev, start_year, end_year)
     actual_start = min(int(d[:4]) for d in dates)
     actual_end   = max(int(d[:4]) for d in dates)
     print(f"  Using {len(dates)} init dates ({actual_start}–{actual_end})")
@@ -291,6 +342,9 @@ def main() -> int:
                     help="First hindcast year (default: auto-detect from files)")
     ap.add_argument("--end-year",   type=int, default=None,
                     help="Last hindcast year (default: auto-detect from files)")
+    ap.add_argument("--hindcast-dir", default=None,
+                    help="Read from this directory of full/ IRI emean files instead of rt_root "
+                         "(e.g. for CFSv2 tas whose rt_root data is sea-ice only)")
     ap.add_argument("--overwrite", action="store_true", help="Overwrite existing files")
     args = ap.parse_args()
 
@@ -322,6 +376,7 @@ def main() -> int:
                         start_year=args.start_year,
                         end_year=args.end_year,
                         overwrite=args.overwrite,
+                        hindcast_dir=args.hindcast_dir,
                     )
                 except Exception as exc:
                     msg = f"[ERROR] {group}-{model} {var}{lev}: {exc}"
@@ -352,6 +407,7 @@ def main() -> int:
             start_year=args.start_year,
             end_year=args.end_year,
             overwrite=args.overwrite,
+            hindcast_dir=args.hindcast_dir,
         )
     except Exception as exc:
         print(f"[ERROR] {exc}")
