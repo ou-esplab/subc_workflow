@@ -142,7 +142,10 @@ def compute_percentiles(
     # Each entry: exact MMDD of the hindcast init date.
     # Phase 2 then pools samples from ±window days around each target MMDD,
     # matching the effective ±15-day window used by the climatology smoothing.
-    calendardates: dict[str, list[xr.DataArray]] = {}
+    # Store numpy arrays (not lazy dask) to avoid expensive concat+rechunk
+    # overhead in the per-MMDD quantile loop.
+    calendardates: dict[str, list[np.ndarray]] = {}
+    lead_coords: list | None = None  # L coordinate values from first loaded file
     n_loaded = 0
     n_missing = 0
 
@@ -163,7 +166,7 @@ def compute_percentiles(
                     n_missing += 1
                     continue
 
-                ds = xr.open_dataset(path, chunks={"L": -1})
+                ds = xr.open_dataset(path)
 
                 # Select pressure level when var has a P dimension (e.g. zg)
                 if _is_pressure_level(lev) and "P" in ds.dims:
@@ -173,13 +176,15 @@ def compute_percentiles(
                 ds = _fold_s_into_m(ds)  # fold S>1 sub-daily inits into M (e.g. CFSv2 S=4)
 
                 mmdd = ts.strftime("%m-%d")
-                # Expand into individual members so concat across years never sees
-                # conflicting M sizes (e.g. NCEP files with S=4 vs S=5).
-                # Keep as lazy dask arrays — skipna=True in quantile handles NaN files.
+                # Expand into individual members and eagerly materialize to numpy.
+                # Avoids building a massive dask graph across thousands of lazy arrays.
                 n_members = ds.sizes.get("M", 1)
                 for i in range(n_members):
                     member_da = ds[var].isel(M=i, drop=True) if "M" in ds.dims else ds[var]
-                    calendardates.setdefault(mmdd, []).append(member_da)
+                    arr = member_da.values.astype(np.float32)
+                    if lead_coords is None and "L" in member_da.coords:
+                        lead_coords = list(member_da.coords["L"].values)
+                    calendardates.setdefault(mmdd, []).append(arr)
                 n_loaded += 1
 
     print(f"  loaded={n_loaded}  missing={n_missing}")
@@ -230,19 +235,25 @@ def compute_percentiles(
             n_wrote += 1
             continue
 
-        # Concat lazily along 'sample', rechunk so quantile sees one contiguous
-        # chunk on that axis, then compute. skipna=True handles any NaN files.
-        combined = xr.concat(dslist, dim="sample").chunk({"sample": -1})
-        n_leads = combined.sizes["L"]
-        pct_da = (
-            combined
-            .quantile(quantile, dim="sample", skipna=True)
-            .drop_vars("quantile")
-            .compute()
-        )
+        # Stack numpy arrays and compute percentile directly — avoids the
+        # expensive dask concat+rechunk path. Transpose to (L, Y, X, n_samples)
+        # so the sample axis is contiguous in memory, which is much faster for
+        # nanpercentile than computing along axis=0 of (n_samples, L, Y, X).
+        arr = np.stack(dslist, axis=0)  # (n_samples, L, Y, X)
+        n_leads = arr.shape[1]
+        arr_t = np.ascontiguousarray(arr.transpose(1, 2, 3, 0))  # (L, Y, X, n_samples)
+        n = arr_t.shape[-1]
+        k = int(np.round(quantile * (n - 1)))
+        if not np.any(np.isnan(arr_t)):
+            # Fast path: partial sort O(n) vs full sort O(n log n)
+            pct_arr = np.partition(arr_t, k, axis=-1)[..., k]
+        else:
+            pct_arr = np.nanpercentile(arr_t, quantile * 100.0, axis=-1)
+        pct_da = xr.DataArray(pct_arr, dims=("L", "Y", "X"))
 
         # Assemble output: dims (month_day: 1, L, Y, X)
-        da = pct_da.assign_coords(L=list(range(n_leads)))
+        l_vals = lead_coords[:n_leads] if lead_coords is not None else list(range(n_leads))
+        da = pct_da.assign_coords(L=l_vals)
         da = da.expand_dims(month_day=[target_mmdd])
         ds_out = da.to_dataset(name=var)
 
