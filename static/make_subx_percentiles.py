@@ -244,11 +244,12 @@ def compute_percentiles(
         arr_t = np.ascontiguousarray(arr.transpose(1, 2, 3, 0))  # (L, Y, X, n_samples)
         n = arr_t.shape[-1]
         k = int(np.round(quantile * (n - 1)))
-        if not np.any(np.isnan(arr_t)):
-            # Fast path: partial sort O(n) vs full sort O(n log n)
-            pct_arr = np.partition(arr_t, k, axis=-1)[..., k]
-        else:
-            pct_arr = np.nanpercentile(arr_t, quantile * 100.0, axis=-1)
+        # Replace NaN with inf so they sort to the end, enabling O(n) partial sort.
+        # Grid points where the k-th partition value is inf were all-NaN → set NaN.
+        arr_filled = arr_t.copy()
+        arr_filled[np.isnan(arr_filled)] = np.inf
+        pct_arr = np.partition(arr_filled, k, axis=-1)[..., k]
+        pct_arr[~np.isfinite(pct_arr)] = np.nan
         pct_da = xr.DataArray(pct_arr, dims=("L", "Y", "X"))
 
         # Assemble output: dims (month_day: 1, L, Y, X)
