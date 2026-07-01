@@ -33,10 +33,22 @@ if [[ ! -d "${SOURCE_DIR}/images" || ! -d "${SOURCE_DIR}/data" ]]; then
   exit 2
 fi
 
-DEST_HOST="${SUBX_WEB_HOST:-somclass23}"
 DEST_BASE="${SUBX_WEB_BASE:-/home/kpegion/http/subc/forecasts}"
 SSH_KEY="${SUBX_WEB_SSH_KEY:-$HOME/.ssh/id_ed25519}"
 PUBLISH_SUBDIR="${SUBX_PUBLISH_SUBDIR:-}"
+
+if [[ -n "${SUBX_WEB_HOST:-}" ]]; then
+  DEST_HOST="$SUBX_WEB_HOST"
+else
+  PRIMARY_HOST="somclass22"
+  FALLBACK_HOST="somclass23"
+  if ssh -i "$SSH_KEY" -o BatchMode=yes -o ConnectTimeout=5 "$PRIMARY_HOST" true 2>/dev/null; then
+    DEST_HOST="$PRIMARY_HOST"
+  else
+    echo "[WARN] $PRIMARY_HOST unreachable; falling back to $FALLBACK_HOST" >&2
+    DEST_HOST="$FALLBACK_HOST"
+  fi
+fi
 VERIFY_REMOTE="${SUBX_PUBLISH_VERIFY_REMOTE:-1}"
 UPDATE_IMAGE_LATEST="${SUBX_PUBLISH_UPDATE_IMAGE_LATEST:-1}"
 

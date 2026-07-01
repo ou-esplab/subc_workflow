@@ -102,6 +102,19 @@ def _cfg_eccc_members(cfg: Dict) -> List[str]:
     return default_members()
 
 
+def _cfg_eccc_var_levels(cfg: Dict) -> Dict[str, int]:
+    """Return per-variable pressure level overrides for ECCC tar extraction.
+
+    Maps CF var name (e.g. 'ua') to the integer hPa level to select from the
+    per-level files inside the ECCC tar (e.g. ua_200_ECCC_...).  Configured
+    under ingest.direct.eccc.var_levels in config.yaml.
+    """
+    direct_cfg = ((cfg.get("ingest") or {}).get("direct") or {})
+    eccc_cfg = direct_cfg.get("eccc") or {}
+    raw = eccc_cfg.get("var_levels") or {}
+    return {str(k): int(v) for k, v in raw.items()}
+
+
 def _ftp_email(cfg: Dict) -> str:
     env_email = os.environ.get("SUBX_DIRECT_FTP_EMAIL", "").strip()
     if env_email:
@@ -394,10 +407,13 @@ def _extract_from_tar(
     destination: Path,
     var: str,
     preferred_members: Sequence[str],
+    preferred_level: Optional[int] = None,
 ) -> bool:
     var_re = _var_regex(var)
     member_rank = {m.lower(): i for i, m in enumerate(preferred_members)}
     fallback_rank = len(member_rank) + 100
+    # Level token to prefer when tar contains per-level files (e.g. ua_200_ECCC_...).
+    level_token = f"{var}_{preferred_level}_" if preferred_level is not None else None
 
     with tarfile.open(str(tar_path), mode="r:*") as tar:
         members = [m for m in tar.getmembers() if m.isfile()]
@@ -411,12 +427,15 @@ def _extract_from_tar(
                 continue
             member_token = _extract_member_token(base)
             rank = member_rank.get(member_token, fallback_rank)
+            # Give the preferred-level file the highest priority (rank -1).
+            if level_token is not None and base.startswith(level_token):
+                rank = -1
             candidates.append((rank, member.name, member))
 
         if not candidates:
             return False
 
-        # Preferred members first in configured order, then deterministic name order.
+        # Preferred level first, then preferred members in order, then name.
         candidates.sort(key=lambda item: (item[0], item[1]))
         selected = candidates[0][2]
         extracted = tar.extractfile(selected)
@@ -804,10 +823,13 @@ def _download_eccc_members_to_subx(
     init_date: str,
     out_file: Path,
     eccc_members: List[str],
+    preferred_level: Optional[int] = None,
 ) -> bool:
     """Download all ECCC member tars, extract var, convert and merge into SubX format.
 
     Output dimensions: (S: 1, M: N, L: 39, Y: 181, X: 360)
+    preferred_level: if set, selects the per-level file from the tar matching
+    {var}_{preferred_level}_* (e.g. ua_200_ECCC_...) instead of alphabetical first.
     """
     import numpy as np
     import pandas as pd
@@ -840,7 +862,7 @@ def _download_eccc_members_to_subx(
             print(f"[DIRECT][ECCC] Downloading {entry.url}")
             try:
                 _download_file(entry.url, tar_tmp, ftp_email)
-                ok = _extract_from_tar(tar_tmp, nc_tmp, var, [member])
+                ok = _extract_from_tar(tar_tmp, nc_tmp, var, [member], preferred_level=preferred_level)
                 if not ok:
                     print(f"[DIRECT][ECCC][WARN] '{var}' not in {tar_name}")
                     continue
@@ -997,6 +1019,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     date_window = _lookback_dates(args.fcst, lookback_days)
     ftp_email = _ftp_email(cfg)
     eccc_members = _cfg_eccc_members(cfg)
+    eccc_var_levels = _cfg_eccc_var_levels(cfg)
     provider_url = _cfg_provider_url(cfg, provider)
 
     print(
@@ -1053,7 +1076,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 print(f"[DIRECT] Exists, skipping: {out_file}")
                 continue
             ok = _download_eccc_members_to_subx(
-                provider_url, ftp_email, args.var, init_date, out_file, eccc_members
+                provider_url, ftp_email, args.var, init_date, out_file, eccc_members,
+                preferred_level=eccc_var_levels.get(args.var),
             )
             if ok:
                 downloaded += 1

@@ -11,11 +11,12 @@ set -x
 
 FCSTDATE="${1:-}"
 CONFIG_IN="${2:-config.yaml}"
+MODEL_FILTER="${3:-}"   # Optional GROUP-MODEL filter, e.g. ECCC-GEPS8
 CONFIG="$(python3 -c 'import os,sys; print(os.path.abspath(sys.argv[1]))' "$CONFIG_IN")"
 
 # Validate
 if [[ -z "${FCSTDATE:-}" ]]; then
-  echo "[FATAL] FCSTDATE is empty; usage: update_subx_fcsts.sh <FCSTDATE> [CONFIG]" >&2
+  echo "[FATAL] FCSTDATE is empty; usage: update_subx_fcsts.sh <FCSTDATE> [CONFIG] [GROUP-MODEL]" >&2
   exit 2
 fi
 if [[ -z "${CONFIG:-}" || ! -f "$CONFIG" ]]; then
@@ -83,14 +84,22 @@ for line in "${CONFIG_LINES[@]}"; do
     SHADOW_ENABLED="$field1"
     SHADOW_RT_ROOT="$field2"
   elif [[ "$kind" == "MODEL" ]]; then
-    MODEL_SPECS+=("$line")
+    if [[ -z "$MODEL_FILTER" || "${field1}-${field2}" == "$MODEL_FILTER" ]]; then
+      MODEL_SPECS+=("$line")
+    fi
   elif [[ "$kind" == "SHADOWMODEL" ]]; then
-    SHADOW_MODEL_SPECS+=("$line")
+    if [[ -z "$MODEL_FILTER" || "${field1}-${field2}" == "$MODEL_FILTER" ]]; then
+      SHADOW_MODEL_SPECS+=("$line")
+    fi
   fi
 done
 
 if [[ "$PRIMARY_ENABLED" == "1" && ${#MODEL_SPECS[@]} -eq 0 ]]; then
-  echo "[FATAL] No model specifications were parsed from $CONFIG" >&2
+  if [[ -n "$MODEL_FILTER" ]]; then
+    echo "[FATAL] Model filter '$MODEL_FILTER' matched no models in $CONFIG" >&2
+  else
+    echo "[FATAL] No model specifications were parsed from $CONFIG" >&2
+  fi
   exit 2
 fi
 

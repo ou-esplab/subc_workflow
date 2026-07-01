@@ -184,7 +184,18 @@ def compute_exceedance(
     if 'Y' in thr.coords:
         thr = thr.rename({'Y': 'lat'})
 
-    # Align threshold lon/lat to forecast grid (nearest)
+    # Align threshold lon/lat to forecast grid (nearest).
+    # Some models (e.g. CFSv2) write percentile files with lat/lon as unindexed
+    # dimensions (no coordinate values). Assign standard 1-degree global coords
+    # inferred from the forecast field's lat ordering so sel() can proceed.
+    if 'lat' in thr.dims and 'lat' not in thr.coords:
+        n_lat = thr.sizes['lat']
+        descending = 'lat' in field.coords and float(field['lat'].values[0]) > float(field['lat'].values[-1])
+        lat_vals = np.linspace(90.0, -90.0, n_lat) if descending else np.linspace(-90.0, 90.0, n_lat)
+        thr = thr.assign_coords(lat=('lat', lat_vals))
+    if 'lon' in thr.dims and 'lon' not in thr.coords:
+        n_lon = thr.sizes['lon']
+        thr = thr.assign_coords(lon=('lon', np.linspace(0.0, 360.0 - 360.0 / n_lon, n_lon)))
     if 'lon' in thr.coords and 'lat' in thr.coords:
         thr = thr.sel(lon=field.lon, lat=field.lat, method='nearest')
 

@@ -59,6 +59,8 @@ def main():
                     help="SubX only: run PyCPT in smoke mode (data prep only)")
     ap.add_argument("--arraylake-dry-run", action="store_true",
                     help="SubX only: scan ArrayLake inputs and report pending updates without writing")
+    ap.add_argument("--ingest-model", default=None,
+                    help="SubX only: limit ingest to one model, e.g. ECCC-GEPS8")
     args = ap.parse_args()
 
     config_path = os.path.abspath(args.config)
@@ -78,7 +80,8 @@ def main():
         if pycpt_env:
             pycpt_cmd = ["conda", "run", "--no-capture-output", "-n", pycpt_env] + pycpt_cmd
         stage_cmds = {
-            "ingest":     [str(ROOT_DIR / "ingest" / "update_subx_fcsts.sh"), init, config_path],
+            "ingest":     [str(ROOT_DIR / "ingest" / "update_subx_fcsts.sh"), init, config_path]
+                          + ([args.ingest_model] if args.ingest_model else []),
             "preprocess": [str(ROOT_DIR / "preprocess" / "run_preprocess.sh"), init, config_path],
             "products":   [str(ROOT_DIR / "products" / "make_fcsts.sh"), init, config_path],
             "pycpt":      pycpt_cmd,

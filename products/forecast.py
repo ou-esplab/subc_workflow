@@ -920,6 +920,7 @@ def main():
     ap.add_argument('--save', action='store_true', help='Write NetCDF + manifest to disk')
     ap.add_argument('--allow-empty-input', action='store_true', help='Exit successfully when no realtime model files are available')
     ap.add_argument('--debug', action='store_true', help='Enable verbose diagnostic logging')
+    ap.add_argument('--skip-exceedance', action='store_true', help='Skip exceedance probability computation')
     args = ap.parse_args()
 
     DEBUG = bool(args.debug or _env_flag("SUBX_PRODUCTS_DEBUG"))
@@ -1223,7 +1224,9 @@ def main():
     ]
 
     # ---- Exceedance for all available models ----
-    if ds_full_by_model:
+    if args.skip_exceedance:
+        print("[INFO] Skipping exceedance computation (--skip-exceedance)")
+    elif ds_full_by_model:
         ds_full = safe_concat(ds_full_by_model, dim='model')
 
         ex = cfg['exceedance']

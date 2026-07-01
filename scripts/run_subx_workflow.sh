@@ -33,6 +33,7 @@ OPTIONS:
   --products-dry-run           Products stage without writing output
   --pycpt-dry-run              PyCPT without running CPT.x
     --arraylake-dry-run          ArrayLake scans and reports without writing
+  --ingest-model GROUP-MODEL   Limit ingest to one model (e.g. ECCC-GEPS8)
   --cron                       Cron mode: uses flock, suppresses stderr if already running
   --help                       Show this message
 
@@ -122,6 +123,10 @@ main() {
             --publish|--publish-dry-run|--products-dry-run|--pycpt-dry-run|--arraylake-dry-run)
                 extra_args+=("$1")
                 shift
+                ;;
+            --ingest-model)
+                extra_args+=("$1" "$2")
+                shift 2
                 ;;
             --help)
                 usage

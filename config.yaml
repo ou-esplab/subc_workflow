@@ -52,6 +52,12 @@ ingest:
     # downloader selects the first available member in this configured order.
     eccc:
       member: m00-m20
+      # Select the correct pressure level from ECCC per-level tar files (e.g. ua_200_ECCC_...).
+      # Without this, alphabetical ordering picks 100mb instead of 200mb for ua/va, and 200mb for zg.
+      var_levels:
+        ua: 200
+        va: 200
+        zg: 500
     providers:
       esrl:
         url: ftp://gsdftp.fsl.noaa.gov/SubX-ESRL-FIMr1.1/
@@ -157,4 +163,5 @@ arraylake:
   # Example:
   #   model_vars:
   #     ECCC-GEPS8: [pr, tas]
-  model_vars: {}
+  model_vars:
+    ECCC-GEPS8: [pr, rlut, tas, ts, zg]  # ua/va excluded: format changed to 100mb-only, no P dim

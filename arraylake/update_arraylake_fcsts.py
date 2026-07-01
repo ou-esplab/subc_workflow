@@ -83,6 +83,7 @@ def _build_runtime_config() -> dict:
         'variables': al_cfg.get('variables') or ['pr', 'tas', 'rlut', 'ts', 'ua', 'va', 'zg'],
         'model_vars': al_cfg.get('model_vars') or {},
         'skip_models': al_cfg.get('skip_models') or [],
+        'model_name_map': cfg.get('model_name_map') or {},
         'models': models,
         'date_filter': date_arg,
         'dry_run': bool(args.dry_run or os.environ.get('ARRAYLAKE_DRY_RUN') == '1'),
@@ -123,6 +124,7 @@ cfg_variables = list(runtime['variables'])
 allowed_variables = set(cfg_variables)
 arraylake_model_vars = runtime.get('model_vars') or {}
 skip_models = set(runtime.get('skip_models') or [])
+model_name_map = runtime.get('model_name_map') or {}
 
 # Build model list from workflow config so this stage stays in sync with config.yaml.
 models_to_process = []
@@ -217,6 +219,8 @@ for subx_model in models_to_process:
         # Get this group and model (group-model is how a model is identified)
         this_model = subx_model['model']
         this_group = subx_model['group']
+        # Resolve the local directory name (may differ from the server model name via model_name_map)
+        this_local_model = model_name_map.get(f"{this_group}-{this_model}", this_model)
         
         ### Open the repository and check the state of the group for this model
         logger.info("STEP 1: Opening repository and checking group state...")
@@ -355,7 +359,7 @@ for subx_model in models_to_process:
             logger.info(f"Processing variable: {variable}")
             
             # # Define the path to the variable dataset of interest on qlcs and log it
-            url = f"{input_path}/{this_group}-{this_model}/{datatype}/{variable}/{variable}_{this_group}-{this_model}_????????.daily.nc"
+            url = f"{input_path}/{this_group}-{this_local_model}/{datatype}/{variable}/{variable}_{this_group}-{this_local_model}_????????.daily.nc"
             logger.info(f"  Search path: {url}")
             
             # Try to, 
