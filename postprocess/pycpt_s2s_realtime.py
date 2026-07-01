@@ -177,7 +177,11 @@ def patch_cptio_zero_day_date_range_parser() -> None:
     if getattr(cptmod, "_subx_zero_day_patch", False):
         return
 
-    original = cptmod.read_cpt_date_range
+    original = getattr(cptmod, "read_cpt_date_range", None)
+    if original is None:
+        # cptio >= 1.2 renamed this to read_cpt_date, which already handles
+        # same-day ranges without raising "Zero or sub-day date range".
+        return
 
     def _patched(date_original):
         try:
