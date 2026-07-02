@@ -63,6 +63,14 @@ ingest:
         ua: 200
         va: 200
         zg: 500
+    # RSMAS publishes separate single-level files per variable (ua_200_*,
+    # ua_850_*, zg_200_*, zg_500_*, ...) with no per-level fetcher; without
+    # this, the generic candidate matcher picks an arbitrary level.
+    rsmas:
+      var_levels:
+        ua: 200
+        va: 200
+        zg: 500
     providers:
       esrl:
         url: ftp://gsdftp.fsl.noaa.gov/SubX-ESRL-FIMr1.1/

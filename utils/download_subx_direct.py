@@ -117,6 +117,20 @@ def _cfg_eccc_var_levels(cfg: Dict) -> Dict[str, int]:
     return {str(k): int(v) for k, v in raw.items()}
 
 
+def _cfg_provider_var_levels(cfg: Dict, provider: str) -> Dict[str, int]:
+    """Return per-variable pressure level overrides for a provider's file listing.
+
+    Some providers (e.g. RSMAS) publish separate single-level files per
+    variable (ua_200_*, ua_850_*, ...) without a dedicated per-level fetcher;
+    this tells the generic candidate filter which level's file to pick.
+    Configured under ingest.direct.<provider>.var_levels in config.yaml.
+    """
+    direct_cfg = ((cfg.get("ingest") or {}).get("direct") or {})
+    provider_cfg = direct_cfg.get(provider) or {}
+    raw = provider_cfg.get("var_levels") or {}
+    return {str(k): int(v) for k, v in raw.items()}
+
+
 def _ftp_email(cfg: Dict) -> str:
     env_email = os.environ.get("SUBX_DIRECT_FTP_EMAIL", "").strip()
     if env_email:
@@ -1442,6 +1456,23 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     if not entries:
         print(f"[DIRECT][WARN] No entries discovered at provider URL: {provider_url}")
         return 0
+
+    # Some providers publish separate single-level files per variable (e.g.
+    # RSMAS's ua_200_* vs ua_850_*) without a level token in the var name
+    # itself; _var_regex would match either indiscriminately, so narrow to
+    # the configured level first when one is set.
+    provider_var_levels = _cfg_provider_var_levels(cfg, provider)
+    preferred_var_level = provider_var_levels.get(args.var)
+    if preferred_var_level is not None:
+        level_token = f"{args.var}_{preferred_var_level}_"
+        level_entries = [e for e in entries if e.name.lower().startswith(level_token.lower())]
+        if level_entries:
+            entries = level_entries
+        else:
+            print(
+                f"[DIRECT][WARN] No files matching level {preferred_var_level} for var={args.var}; "
+                f"falling back to unfiltered candidates"
+            )
 
     candidates = _filter_candidates(entries, args.var, date_window, provider)
     if not candidates:
