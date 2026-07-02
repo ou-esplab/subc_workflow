@@ -994,7 +994,7 @@ def _download_gefs_to_subx(
 ) -> bool:
     """Download all 31 GEFS ensemble member files (00z cycle), merge into SubX format.
 
-    Output dimensions: (S: 1, M: 31, [P: 1,] L: 35, Y: 181, X: 360)
+    Output dimensions: (S: 1, M: 31, [P: 1,] L: 34, Y: 181, X: 360)
     """
     import numpy as np
     import pandas as pd
@@ -1010,6 +1010,12 @@ def _download_gefs_to_subx(
     init_ts = pd.Timestamp(init_date)
     base = base_url.rstrip("/")
 
+    # CPC's GEFS files carry 35 lead days; the legacy IRIDL-sourced archive (and
+    # the precomputed climatology it's compared against in products/forecast.py)
+    # only covers 34. Truncate to stay compatible until the climatology is
+    # regenerated to cover the extra day.
+    max_lead_days = 34
+
     member_arrays: List = []
     lead_days_ref: Optional[np.ndarray] = None
 
@@ -1019,7 +1025,8 @@ def _download_gefs_to_subx(
         tmp_file = Path(tmpdir) / fname
         print(f"[DIRECT][GEFS] Downloading {url}")
         _download_file(url, tmp_file, ftp_email)
-        return xr.open_dataset(tmp_file, decode_times=False)
+        ds = xr.open_dataset(tmp_file, decode_times=False)
+        return ds.isel(time=slice(0, max_lead_days))
 
     def _lead_days_gefs(ds: "xr.Dataset") -> "np.ndarray":
         return ds["time"].values.astype(np.float32)
