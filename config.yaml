@@ -34,9 +34,7 @@ ingest:
     EMC-GEFSv12_CPC: direct_gefs
     GMAO-GEOS_V2p1_5daily: direct_gmao
     RSMAS-CCSM4: direct_rsmas
-    # ESRL-FIMr1p1 stays on iridl: its direct FTP source (gsdftp.fsl.noaa.gov)
-    # was returning "Broken pipe" on every request as of 2026-07-02 and gave
-    # no better result than IRIDL that day. Revisit once confirmed working.
+    ESRL-FIMr1p1: direct_esrl
   # Optional shadow ingest that runs in parallel and writes to a separate root.
   # This is used to validate direct-source ingest without changing downstream
   # stages that read from paths.rt_root.
@@ -54,7 +52,7 @@ ingest:
   direct:
     # Anonymous FTP password for provider endpoints that require an email.
     # Prefer setting SUBX_DIRECT_FTP_EMAIL in the runtime environment.
-    ftp_email: anonymous@example.com
+    ftp_email: kpegion@ou.edu
     # ECCC tar archives include ensemble members (m00-m20). By default,
     # downloader selects the first available member in this configured order.
     eccc:
