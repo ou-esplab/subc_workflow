@@ -30,6 +30,8 @@ ingest:
   # Supported values: iridl, direct, direct_esrl, direct_gmao, direct_eccc, direct_rsmas
   model_source:
     ECCC-GEPS8: direct_eccc
+    NCEP-CFSv2: direct_cfs
+    EMC-GEFSv12_CPC: direct_gefs
   # Optional shadow ingest that runs in parallel and writes to a separate root.
   # This is used to validate direct-source ingest without changing downstream
   # stages that read from paths.rt_root.

@@ -28,6 +28,8 @@ DEFAULT_PROVIDER_URLS = {
     "gmao_v3": "https://portal.nccs.nasa.gov/datashare/gmao/geos-s2s-3/NRT/SubC/",
     "eccc": "https://collaboration.cmc.ec.gc.ca/cmc/CMOI/GRIB/GEPS/forecast/subX_fcst/",
     "rsmas": "ftp://decadal.rsmas.miami.edu/pub/CPC_DATA/CCSM4/forecast/priority1/",
+    "cfs": "https://ftp.cpc.ncep.noaa.gov/dcollins/SubX/CFS/",
+    "gefs": "https://ftp.cpc.ncep.noaa.gov/dcollins/SubX/GEFS/",
 }
 
 
@@ -808,6 +810,276 @@ def _download_gmao_to_subx(
 # ── end GMAO helpers ───────────────────────────────────────────────────────────
 
 
+# ── CFS-specific download helpers ─────────────────────────────────────────────
+# CPC mirror (https://ftp.cpc.ncep.noaa.gov/dcollins/SubX/CFS/) organizes files
+# under one subdirectory per variable/level, e.g. pr_sfc/realtime/, zg_500/realtime/.
+# File pattern: {prefix}_CFS_{ddmonyyyy}_{HH}z_d00_d44_{member}.nc
+# CPC publishes 4 init cycles/day (00z/06z/12z/18z); only 00z is fetched here to
+# match the existing one-file-per-calendar-day SubX archive convention (S:1/day).
+# Each file has exactly one data variable, whose in-file name is looked up
+# dynamically rather than hardcoded (GEFS/CFS use inconsistent internal names).
+
+_CFS_VAR_PREFIX: Dict[str, str] = {
+    "pr":  "pr_sfc",
+    "tas": "tas_2m",
+}
+
+_CFS_VAR_LEVELS: Dict[str, List[Tuple[int, str]]] = {
+    "zg": [(500, "zg_500"), (200, "zg_200")],
+}
+
+_CFS_MEMBERS = ["m01", "m02", "m03", "m04"]
+
+
+def _list_cfs_dates(base_url: str, var: str) -> List[str]:
+    """Return available 00z init dates for a variable on the CFS mirror, newest first."""
+    if var in _CFS_VAR_LEVELS:
+        prefix = _CFS_VAR_LEVELS[var][0][1]
+    else:
+        prefix = _CFS_VAR_PREFIX.get(var, "")
+    if not prefix:
+        return []
+    list_url = f"{base_url.rstrip('/')}/{prefix}/realtime/"
+    entries = _http_list(list_url, depth=0)
+    dates: set = set()
+    for entry in entries:
+        name = entry.name.lower()
+        if not (name.startswith(prefix.lower() + "_cfs_") and "_00z_" in name and name.endswith("_m01.nc")):
+            continue
+        for d in _extract_dates(entry.name):
+            dates.add(d)
+    return sorted(dates, reverse=True)
+
+
+def _download_cfs_to_subx(
+    base_url: str,
+    ftp_email: str,
+    var: str,
+    init_date: str,
+    out_file: Path,
+) -> bool:
+    """Download all 4 CFS ensemble member files (00z cycle), merge into SubX format.
+
+    Output dimensions: (S: 1, M: 4, [P: N,] L: 44, Y: 181, X: 360)
+    """
+    import numpy as np
+    import pandas as pd
+    import xarray as xr
+
+    is_multilevel = var in _CFS_VAR_LEVELS
+    var_prefix = _CFS_VAR_PREFIX.get(var)
+    if not is_multilevel and var_prefix is None:
+        print(f"[DIRECT][CFS] Variable '{var}' not available on CFS mirror; skipping.")
+        return False
+
+    cfs_date = _esrl_date_str(init_date)
+    init_ts = pd.Timestamp(init_date)
+    base = base_url.rstrip("/")
+
+    member_arrays: List = []
+    lead_days_ref: Optional[np.ndarray] = None
+
+    def _fetch_cfs(prefix: str, member: str, tmpdir: str) -> "xr.Dataset":
+        fname = f"{prefix}_CFS_{cfs_date}_00z_d00_d44_{member}.nc"
+        url = f"{base}/{prefix}/realtime/{fname}"
+        tmp_file = Path(tmpdir) / fname
+        print(f"[DIRECT][CFS] Downloading {url}")
+        _download_file(url, tmp_file, ftp_email)
+        return xr.open_dataset(tmp_file, decode_times=False)
+
+    def _lead_days_cfs(ds: "xr.Dataset") -> "np.ndarray":
+        # time units are "days since {init_date} 00:00:00"; values are already lead days.
+        return ds["time"].values.astype(np.float32)
+
+    def _data_var(ds: "xr.Dataset") -> str:
+        return list(ds.data_vars)[0]
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        for m_idx, member in enumerate(_CFS_MEMBERS, start=1):
+            try:
+                if is_multilevel:
+                    level_arrays: List = []
+                    for p_val, prefix in _CFS_VAR_LEVELS[var]:
+                        ds = _fetch_cfs(prefix, member, tmpdir)
+                        if lead_days_ref is None:
+                            lead_days_ref = _lead_days_cfs(ds)
+                        da_lev = (
+                            ds[_data_var(ds)]
+                            .rename({"time": "L", "lat": "Y", "lon": "X"})
+                            .assign_coords(L=lead_days_ref)
+                        )
+                        da_lev["L"].attrs["units"] = "days"
+                        da_lev = da_lev.expand_dims(P=[p_val])
+                        level_arrays.append(da_lev)
+                        ds.close()
+                    da_member = xr.concat(level_arrays, dim="P").expand_dims(M=[m_idx])
+                else:
+                    ds = _fetch_cfs(var_prefix, member, tmpdir)
+                    if lead_days_ref is None:
+                        lead_days_ref = _lead_days_cfs(ds)
+                    da_member = (
+                        ds[_data_var(ds)]
+                        .rename({"time": "L", "lat": "Y", "lon": "X"})
+                        .assign_coords(L=lead_days_ref)
+                    )
+                    da_member["L"].attrs["units"] = "days"
+                    da_member = da_member.expand_dims(M=[m_idx])
+                    ds.close()
+            except Exception as exc:
+                print(f"[DIRECT][CFS][WARN] Failed for member {member}: {exc}", file=sys.stderr)
+                return False
+            member_arrays.append(da_member)
+
+        combined = xr.concat(member_arrays, dim="M")
+        combined = combined.expand_dims(S=[np.datetime64(init_ts, "ns")])
+        # Match the existing raw-ingest convention (P first when present).
+        dim_order = ("P", "S", "M", "L", "Y", "X") if "P" in combined.dims else ("S", "M", "L", "Y", "X")
+        combined = combined.transpose(*[d for d in dim_order if d in combined.dims])
+        ds_out = combined.to_dataset(name=var)
+
+        out_file.parent.mkdir(parents=True, exist_ok=True)
+        tmp = out_file.with_suffix(".tmp.nc")
+        ds_out.to_netcdf(tmp)
+        tmp.rename(out_file)
+
+    return True
+
+# ── end CFS helpers ────────────────────────────────────────────────────────────
+
+
+# ── GEFS-specific download helpers ────────────────────────────────────────────
+# CPC mirror (https://ftp.cpc.ncep.noaa.gov/dcollins/SubX/GEFS/) keeps all
+# variables in one flat directory. File pattern:
+#   {prefix}_GEFS_{ddmonyyyy}_00z_d01_d35_{member}.nc
+# 31 members (m00-m30), single 00z cycle/day. Each file has exactly one data
+# variable, whose in-file name is looked up dynamically (e.g. PRATE_P1_L1_GLL0).
+
+_GEFS_VAR_PREFIX: Dict[str, str] = {
+    "pr":  "prate_sfc",
+    "tas": "tas_2m",
+}
+
+_GEFS_VAR_LEVELS: Dict[str, List[Tuple[int, str]]] = {
+    "zg": [(500, "zg_500")],
+}
+
+_GEFS_MEMBERS = ["m%02d" % i for i in range(31)]
+
+
+def _list_gefs_dates(base_url: str, var: str) -> List[str]:
+    """Return available 00z init dates for a variable on the GEFS mirror, newest first."""
+    if var in _GEFS_VAR_LEVELS:
+        prefix = _GEFS_VAR_LEVELS[var][0][1]
+    else:
+        prefix = _GEFS_VAR_PREFIX.get(var, "")
+    if not prefix:
+        return []
+    entries = _http_list(base_url, depth=0)
+    dates: set = set()
+    for entry in entries:
+        name = entry.name.lower()
+        if not (name.startswith(prefix.lower() + "_gefs_") and "_00z_" in name and name.endswith("_m00.nc")):
+            continue
+        for d in _extract_dates(entry.name):
+            dates.add(d)
+    return sorted(dates, reverse=True)
+
+
+def _download_gefs_to_subx(
+    base_url: str,
+    ftp_email: str,
+    var: str,
+    init_date: str,
+    out_file: Path,
+) -> bool:
+    """Download all 31 GEFS ensemble member files (00z cycle), merge into SubX format.
+
+    Output dimensions: (S: 1, M: 31, [P: 1,] L: 35, Y: 181, X: 360)
+    """
+    import numpy as np
+    import pandas as pd
+    import xarray as xr
+
+    is_multilevel = var in _GEFS_VAR_LEVELS
+    var_prefix = _GEFS_VAR_PREFIX.get(var)
+    if not is_multilevel and var_prefix is None:
+        print(f"[DIRECT][GEFS] Variable '{var}' not available on GEFS mirror; skipping.")
+        return False
+
+    gefs_date = _esrl_date_str(init_date)
+    init_ts = pd.Timestamp(init_date)
+    base = base_url.rstrip("/")
+
+    member_arrays: List = []
+    lead_days_ref: Optional[np.ndarray] = None
+
+    def _fetch_gefs(prefix: str, member: str, tmpdir: str) -> "xr.Dataset":
+        fname = f"{prefix}_GEFS_{gefs_date}_00z_d01_d35_{member}.nc"
+        url = f"{base}/{fname}"
+        tmp_file = Path(tmpdir) / fname
+        print(f"[DIRECT][GEFS] Downloading {url}")
+        _download_file(url, tmp_file, ftp_email)
+        return xr.open_dataset(tmp_file, decode_times=False)
+
+    def _lead_days_gefs(ds: "xr.Dataset") -> "np.ndarray":
+        return ds["time"].values.astype(np.float32)
+
+    def _data_var(ds: "xr.Dataset") -> str:
+        return list(ds.data_vars)[0]
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        for m_idx, member in enumerate(_GEFS_MEMBERS):
+            try:
+                if is_multilevel:
+                    level_arrays: List = []
+                    for p_val, prefix in _GEFS_VAR_LEVELS[var]:
+                        ds = _fetch_gefs(prefix, member, tmpdir)
+                        if lead_days_ref is None:
+                            lead_days_ref = _lead_days_gefs(ds)
+                        da_lev = (
+                            ds[_data_var(ds)]
+                            .rename({"time": "L", "lat": "Y", "lon": "X"})
+                            .assign_coords(L=lead_days_ref)
+                        )
+                        da_lev["L"].attrs["units"] = "days"
+                        da_lev = da_lev.expand_dims(P=[p_val])
+                        level_arrays.append(da_lev)
+                        ds.close()
+                    da_member = xr.concat(level_arrays, dim="P").expand_dims(M=[m_idx])
+                else:
+                    ds = _fetch_gefs(var_prefix, member, tmpdir)
+                    if lead_days_ref is None:
+                        lead_days_ref = _lead_days_gefs(ds)
+                    da_member = (
+                        ds[_data_var(ds)]
+                        .rename({"time": "L", "lat": "Y", "lon": "X"})
+                        .assign_coords(L=lead_days_ref)
+                    )
+                    da_member["L"].attrs["units"] = "days"
+                    da_member = da_member.expand_dims(M=[m_idx])
+                    ds.close()
+            except Exception as exc:
+                print(f"[DIRECT][GEFS][WARN] Failed for member {member}: {exc}", file=sys.stderr)
+                return False
+            member_arrays.append(da_member)
+
+        combined = xr.concat(member_arrays, dim="M")
+        combined = combined.expand_dims(S=[np.datetime64(init_ts, "ns")])
+        # Match the existing raw-ingest convention (P first when present).
+        dim_order = ("P", "S", "M", "L", "Y", "X") if "P" in combined.dims else ("S", "M", "L", "Y", "X")
+        combined = combined.transpose(*[d for d in dim_order if d in combined.dims])
+        ds_out = combined.to_dataset(name=var)
+
+        out_file.parent.mkdir(parents=True, exist_ok=True)
+        tmp = out_file.with_suffix(".tmp.nc")
+        ds_out.to_netcdf(tmp)
+        tmp.rename(out_file)
+
+    return True
+
+# ── end GEFS helpers ───────────────────────────────────────────────────────────
+
+
 # ── ECCC conversion helper ─────────────────────────────────────────────────────
 # ECCC provides one tar per member (m00-m20 = 21 members) per init date.
 # Each tar contains all variables; init date is in the time coordinate's
@@ -1108,6 +1380,56 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         print(f"[DIRECT] Completed provider={provider} downloaded={downloaded}")
         return 0
     # ── end ESRL ───────────────────────────────────────────────────────────────
+
+    if provider == "cfs":
+        available = _list_cfs_dates(provider_url, args.var)
+        if not available:
+            print(f"[DIRECT][CFS] No files found for var={args.var} at {provider_url}")
+            return 0
+        date_window_set = set(date_window)
+        matching = [d for d in available if d in date_window_set]
+        if not matching:
+            print(
+                f"[DIRECT][CFS] No files in lookback window for var={args.var} "
+                f"(window={date_window[-1]}..{date_window[0]})"
+            )
+            return 0
+        for init_date in matching:
+            out_file = target_dir / f"{args.var}_{args.group}-{args.local_model}_{init_date}.daily.nc"
+            if out_file.exists():
+                print(f"[DIRECT] Exists, skipping: {out_file}")
+                continue
+            ok = _download_cfs_to_subx(provider_url, ftp_email, args.var, init_date, out_file)
+            if ok:
+                downloaded += 1
+        print(f"[DIRECT] Completed provider={provider} downloaded={downloaded}")
+        return 0
+    # ── end CFS ────────────────────────────────────────────────────────────────
+
+    if provider == "gefs":
+        available = _list_gefs_dates(provider_url, args.var)
+        if not available:
+            print(f"[DIRECT][GEFS] No files found for var={args.var} at {provider_url}")
+            return 0
+        date_window_set = set(date_window)
+        matching = [d for d in available if d in date_window_set]
+        if not matching:
+            print(
+                f"[DIRECT][GEFS] No files in lookback window for var={args.var} "
+                f"(window={date_window[-1]}..{date_window[0]})"
+            )
+            return 0
+        for init_date in matching:
+            out_file = target_dir / f"{args.var}_{args.group}-{args.local_model}_{init_date}.daily.nc"
+            if out_file.exists():
+                print(f"[DIRECT] Exists, skipping: {out_file}")
+                continue
+            ok = _download_gefs_to_subx(provider_url, ftp_email, args.var, init_date, out_file)
+            if ok:
+                downloaded += 1
+        print(f"[DIRECT] Completed provider={provider} downloaded={downloaded}")
+        return 0
+    # ── end GEFS ───────────────────────────────────────────────────────────────
 
     entries = _list_entries(provider_url, ftp_email, provider, date_window)
     if not entries:
