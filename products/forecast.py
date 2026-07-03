@@ -1062,7 +1062,10 @@ def main():
             ds = ds.rename({"X": "lon", "Y": "lat", "L": "lead"})
             ds["lon"].attrs["units"] = "degrees_east"
             ds["lat"].attrs["units"] = "degrees_north"
-            ds = ensure_lon(ds, lon_conv).assign_coords(model=model_id_local)   # <-- local id
+            # Some models write lat descending (90 -> -90, e.g. CPC-sourced CFS/GEFS)
+            # while others are ascending; sort so every model shares one convention
+            # before anything downstream merges models along a shared lat axis.
+            ds = ensure_lon(ds, lon_conv).sortby('lat').assign_coords(model=model_id_local)   # <-- local id
             if "M" in ds.dims and "M" not in ds.coords:
                 ds = ds.assign_coords(M=np.arange(1, int(ds.sizes["M"]) + 1, dtype=np.int32))
 

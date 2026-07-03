@@ -508,6 +508,21 @@ def _download_file(source_url: str, destination: Path, ftp_email: str) -> None:
     raise RuntimeError(f"Unsupported source URL: {source_url}")
 
 
+def _snap_grid_coords(ds: "xr.Dataset") -> "xr.Dataset":
+    """Round lat/lon coordinates to the nearest integer degree.
+
+    Some provider sources encode grid coordinates with tiny floating-point
+    error baked into the file itself (e.g. ESRL's rlut/tas/ts/ua/va files
+    carry -89.99999237 instead of -90.0, while its own pr/zg files are
+    exact). SubX's grid is always exact 1-degree spacing, so snapping at
+    download time prevents spurious near-duplicate points once datasets are
+    later merged across variables/models.
+    """
+    import numpy as np
+    coords = {name: np.round(ds[name].values) for name in ("lat", "lon") if name in ds.coords}
+    return ds.assign_coords(**coords) if coords else ds
+
+
 # ── ESRL-specific download helpers ────────────────────────────────────────────
 
 # Single-level variables: SubX var name → ESRL FTP filename prefix.
@@ -605,7 +620,7 @@ def _download_esrl_to_subx(
             except Exception:
                 pass
         # ESRL uses Julian calendar; decode manually to avoid cftime issues
-        return xr.open_dataset(tmp_file, decode_times=False)
+        return _snap_grid_coords(xr.open_dataset(tmp_file, decode_times=False))
 
     def _lead_days_from_ds(ds: "xr.Dataset") -> "np.ndarray":
         time_units = ds["time"].attrs.get("units", "")
@@ -759,7 +774,7 @@ def _download_gmao_to_subx(
         tmp_file = Path(tmpdir) / fname
         print(f"[DIRECT][GMAO] Downloading {url}")
         _download_file(url, tmp_file, ftp_email)
-        return xr.open_dataset(tmp_file)
+        return _snap_grid_coords(xr.open_dataset(tmp_file))
 
     def _lead_days_gmao(ds: "xr.Dataset") -> "np.ndarray":
         time_vals = pd.DatetimeIndex(ds["time"].values)
@@ -899,7 +914,7 @@ def _download_cfs_to_subx(
         tmp_file = Path(tmpdir) / fname
         print(f"[DIRECT][CFS] Downloading {url}")
         _download_file(url, tmp_file, ftp_email)
-        return xr.open_dataset(tmp_file, decode_times=False)
+        return _snap_grid_coords(xr.open_dataset(tmp_file, decode_times=False))
 
     def _lead_days_cfs(ds: "xr.Dataset") -> "np.ndarray":
         # time units are "days since {init_date} 00:00:00"; values are already lead days.
@@ -1039,7 +1054,7 @@ def _download_gefs_to_subx(
         tmp_file = Path(tmpdir) / fname
         print(f"[DIRECT][GEFS] Downloading {url}")
         _download_file(url, tmp_file, ftp_email)
-        ds = xr.open_dataset(tmp_file, decode_times=False)
+        ds = _snap_grid_coords(xr.open_dataset(tmp_file, decode_times=False))
         return ds.isel(time=slice(0, max_lead_days))
 
     def _lead_days_gefs(ds: "xr.Dataset") -> "np.ndarray":
