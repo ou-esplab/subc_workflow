@@ -21,7 +21,7 @@ cd "$ROOT_DIR"
 
 # ---- Configuration ----------------------------------------------------------
 CONFIG="${SUBX_CONFIG:-$ROOT_DIR/config.yaml}"
-STAGES="${SUBX_STAGES:-ingest preprocess products publish arraylake}"
+STAGES="${SUBX_STAGES:-ingest preprocess products publish}"
 CONDA_BASE="${CONDA_BASE:-$HOME/miniconda3}"
 ENV_NAME="${ENV_NAME:-subc_workflow_env}"
 export SUBC_PYCPT_ENV="${SUBC_PYCPT_ENV:-subc_pycpt_2_8_2}"

@@ -346,7 +346,13 @@ for subx_model in models_to_process:
         
         # Start reading in the SubC data by creating an empty dataset list to append to
         ds_list = []
-        
+        # Track which start times each variable actually has a source file for, so we
+        # can later restrict writes to times where every configured variable has data.
+        # Appending a start time for only some variables leaves the zarr group's arrays
+        # with mismatched S-dimension lengths, which permanently breaks all future reads
+        # of the group (see arraylake data-integrity incident, 2026-07-02).
+        var_time_sets = {}
+
         # Initialize counters for file processing summary
         total_files_found = 0
         total_files_read = 0
@@ -475,6 +481,7 @@ for subx_model in models_to_process:
                         
                         # Append the new dataset to the dataset list and log that it was added to the merge list
                         ds_list.append(ds_valid)
+                        var_time_sets[variable] = set(pd.Index(ds_valid['S'].values))
                         logger.info(f"  ✓ Added to merge list")
                     
                     # If any exception occurs while concatenating the datasets,
@@ -573,7 +580,26 @@ for subx_model in models_to_process:
             logger.error(traceback.format_exc())
             model_results.append((this_model, False, f"Merge error: {str(e)}"))
             continue
-        
+
+        ### Determine whether every configured variable has at least one source file
+        ### this run. Section 3 (appending brand-new start times) writes ds_allvars
+        ### via to_zarr(..., append_dim="S"): any variable entirely absent from
+        ### ds_allvars.data_vars simply never gets touched by that write, so its
+        ### zarr array's S length falls behind the other variables' -- permanently
+        ### breaking every future read of the group. (Variables that ARE present
+        ### but only cover some of the new start times are safe: xr.merge's outer
+        ### join fills the gaps with NaN, so every present variable's array still
+        ### grows by the same amount.) If any configured variable has zero files,
+        ### Section 3 is skipped below and retried automatically next run.
+        required_vars = subx_model['variables']
+        vars_with_no_files_this_run = [v for v in required_vars if v not in ds_allvars.data_vars]
+        if vars_with_no_files_this_run:
+            logger.warning(
+                f"  ⚠ No source files this run for {vars_with_no_files_this_run}; "
+                f"new start times will be held back to avoid growing only some "
+                f"variables' arrays (existing-time variable backfills are unaffected)."
+            )
+
         ### Compare the variables and times in the merged dataset from qlcs to those in the model group to see what is missing
         # Log that the comparison of variables and times is beginning
         logger.info("")
@@ -627,8 +653,13 @@ for subx_model in models_to_process:
             write_store = write_session.store
             # Log that the writable session was created successfully
             logger.info(f"✓ Created writable session")
+            # Commit messages are accumulated here and only committed once, after
+            # STEP 7 verifies the staged writes are structurally consistent. This
+            # keeps a failed verification from leaving a partial write permanently
+            # on the branch (see STEP 7 below).
+            commit_messages = []
 
-        # If any exception occurs during the creation of the writable session,  
+        # If any exception occurs during the creation of the writable session,
         except Exception as e:
             # Log the error that occurred during writable session creation and skip to the next model
             logger.error(f"✗ Failed to create writable session: {str(e)}")
@@ -686,9 +717,9 @@ for subx_model in models_to_process:
                 
                 # Write the merged dataset with all variables and start times to the repository
                 ds_allvars.to_zarr(write_store, zarr_format=3, consolidated=False, mode="w", group=group_name)
-                # Commit the write with the defined message
-                write_session.commit(message)
-                
+                # Defer the commit until STEP 7 verifies this write is structurally sound
+                commit_messages.append(message)
+
                 # Log that the initial write was successful and how long it took
                 logger.info(f"✓ Initial write complete in {time.time() - repo_write_start:.1f} seconds")
             
@@ -782,9 +813,9 @@ for subx_model in models_to_process:
 
                     write_batches += 1
 
-                # Commit the append with the defined message
-                write_session.commit(var_message)
-                
+                # Defer the commit until STEP 7 verifies this write is structurally sound
+                commit_messages.append(var_message)
+
                 # Log that the missing variables were added successfully and how long it took
                 logger.info(f"✓ Missing variables added in {time.time() - var_append_start:.1f} seconds across {write_batches} write batches")
                 
@@ -797,8 +828,17 @@ for subx_model in models_to_process:
                 continue
         
         ##### 3. In the case that the model group already exists and new start times need to be added #####
-        # If there are one or more new times to be added to the model group
-        if len(missing_times) > 0 and len(existing_times) > 0:
+        if len(missing_times) > 0 and len(existing_times) > 0 and vars_with_no_files_this_run:
+            logger.info("")
+            logger.info(
+                f"ℹ Holding back {len(missing_times)} new start time(s): missing files for "
+                f"{vars_with_no_files_this_run} this run. Will retry once all variables are available."
+            )
+
+        # If there are one or more new times to be added to the model group, and every configured
+        # variable has at least one file this run (see the coverage check above) -- otherwise the
+        # append would grow some variables' S dimension without the others and corrupt the group.
+        if len(missing_times) > 0 and len(existing_times) > 0 and not vars_with_no_files_this_run:
             # Log that there are new start times to be added and the new start times will be appended to the existing model group
             logger.info("")
             logger.info("SECTION 3: Appending new start times")
@@ -865,9 +905,9 @@ for subx_model in models_to_process:
                     subset_missing_times.to_zarr(write_store, zarr_format=3, consolidated=False, mode="a", append_dim="S",
                                                  group=group_name)
                 
-                # Commit the append with the defined message
-                write_session.commit(time_message)
-                
+                # Defer the commit until STEP 7 verifies this write is structurally sound
+                commit_messages.append(time_message)
+
                 # Log that the new start times were added successfully and how long it took
                 logger.info(f"✓ {len(missing_times)} new start times appended in {time.time() - time_append_start:.1f} seconds")
                 
@@ -901,12 +941,25 @@ for subx_model in models_to_process:
             
         # If any exception occurs during the verification of the changes before committing,
         except Exception as e:
-            # Log the error that occurred during verification and skip to the next model
+            # Log the error that occurred during verification and skip to the next model. Nothing
+            # was committed above (writes were only staged in commit_messages), so the branch is
+            # left exactly as it was before this model was processed -- no partial write persists.
             logger.error(f"✗ Verification failed: {str(e)}")
             logger.error(traceback.format_exc())
             model_results.append((this_model, False, f"Verification error: {str(e)}"))
             continue
-        
+
+        # Verification passed: commit the staged write(s) now, as a single commit.
+        if commit_messages:
+            try:
+                write_session.commit("; ".join(commit_messages))
+                logger.info(f"✓ Committed: {'; '.join(commit_messages)}")
+            except Exception as e:
+                logger.error(f"✗ Commit failed: {str(e)}")
+                logger.error(traceback.format_exc())
+                model_results.append((this_model, False, f"Commit error: {str(e)}"))
+                continue
+
         ### Finally commit the new changes with messages describing what was changed and update the main branch ###
         # Log that the final commit and main branch update step is beginning
         logger.info("")
