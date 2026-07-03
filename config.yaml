@@ -177,4 +177,4 @@ arraylake:
   #   model_vars:
   #     ECCC-GEPS8: [pr, tas]
   model_vars:
-    ECCC-GEPS8: [pr, rlut, tas, ts, zg]  # ua/va excluded: format changed to 100mb-only, no P dim
+    ECCC-GEPS8: [pr, rlut, tas, ts, ua, va, zg]

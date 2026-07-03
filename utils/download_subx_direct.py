@@ -802,6 +802,14 @@ def _download_gmao_to_subx(
                             .rename({"time": "L", "lat": "Y", "lon": "X"})
                             .assign_coords(L=lead_days_ref)
                         )
+                        # Some GMAO per-level files carry a genuine (size-1) 'lev'
+                        # axis alongside the per-level P value assigned below;
+                        # dropping the coordinate label above only removes the
+                        # label, not the axis itself, so squeeze it out here or
+                        # every variable in the merged dataset ends up with a
+                        # mismatched, spurious 'lev' dimension.
+                        if "lev" in da_lev.dims:
+                            da_lev = da_lev.squeeze("lev", drop=True)
                         da_lev["L"].attrs["units"] = "days"
                         da_lev = da_lev.expand_dims(P=[p_val])
                         level_arrays.append(da_lev)
@@ -1212,6 +1220,14 @@ def _download_eccc_members_to_subx(
     import xarray as xr
 
     combined = xr.concat(member_arrays, dim="M")
+    if preferred_level is not None:
+        # A single per-level file was selected above (var_levels config), so the
+        # data itself only ever has one pressure level -- but the archive's
+        # existing schema for this variable has a real P dimension from earlier
+        # history. Embed a size-1 P dim at the selected level so this merges
+        # against the archive's P axis instead of silently losing the P
+        # dimension (which previously looked like "format changed, no P dim").
+        combined = combined.expand_dims(P=[preferred_level])
     combined = combined.expand_dims(S=[np.datetime64(init_ts, "ns")])
     ds_out = combined.to_dataset(name=var)
 

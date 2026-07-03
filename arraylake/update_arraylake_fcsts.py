@@ -16,6 +16,7 @@ import time
 import traceback
 import glob
 from arraylake import Client
+import zarr
 import logging
 import yaml
 import dask
@@ -456,6 +457,25 @@ for subx_model in models_to_process:
                 if valid_ds_list:
                     # Try to,
                     try:
+                        # Reconcile the 'L' (lead-time) coordinate across this variable's
+                        # own per-date files before concatenating. The same provider can
+                        # flip its nominal lead-time offset convention for a variable
+                        # between one date and the next (e.g. a period-average field
+                        # labeled half a day later on some dates, whole-day on others) --
+                        # xr.concat would otherwise treat these as distinct L values and
+                        # union (double) the L axis for this single variable, before the
+                        # cross-variable reconciliation in STEP 4 ever runs. Align every
+                        # file's L coordinate positionally to the first file's L values
+                        # whenever lengths match.
+                        reference_L = valid_ds_list[0]['L'].values
+                        for i in range(1, len(valid_ds_list)):
+                            if len(valid_ds_list[i]['L']) == len(reference_L) and not np.array_equal(valid_ds_list[i]['L'].values, reference_L):
+                                logger.info(
+                                    f"  ℹ Reconciling L coordinate across dates for {variable} "
+                                    f"(offset differs from the reference date, same length {len(reference_L)})"
+                                )
+                                valid_ds_list[i] = valid_ds_list[i].assign_coords(L=reference_L)
+
                         # Concatenate the list of valid datasets together into one valid dataset and log success
                         ds_valid = xr.concat(valid_ds_list, dim='S')
                         logger.info(f"  ✓ Concatenated {len(valid_ds_list)} files into single dataset")
@@ -517,8 +537,28 @@ for subx_model in models_to_process:
         logger.info("")
         logger.info("STEP 4: Merging and preparing dataset...")
         
-        # Try to, 
+        # Try to,
         try:
+            # Reconcile the 'L' (lead-time) coordinate across variables before merging.
+            # Different variables' raw source files can carry subtly different nominal
+            # lead-time offsets for the same underlying sequence of forecast output
+            # steps (e.g. an instantaneous field sampled at whole-day marks vs a
+            # period-average field labeled half a day later) -- xr.merge treats these
+            # as distinct L values and unions (doubles) the L axis instead of aligning
+            # by forecast step, which breaks the write since the archive stores one
+            # shared L axis per model. All configured variables for a model share the
+            # same number of lead steps, so align every variable's L coordinate
+            # positionally to the first variable's L values whenever lengths match.
+            if ds_list:
+                reference_L = ds_list[0]['L'].values
+                for i in range(1, len(ds_list)):
+                    if len(ds_list[i]['L']) == len(reference_L) and not np.array_equal(ds_list[i]['L'].values, reference_L):
+                        logger.info(
+                            f"  ℹ Reconciling L coordinate for a variable in the merge list "
+                            f"(offset differs from the reference variable, same length {len(reference_L)})"
+                        )
+                        ds_list[i] = ds_list[i].assign_coords(L=reference_L)
+
             # Merge all the seperate model variable datasets in the dataset list together into one dataset
             ds_allvars = xr.merge(ds_list)
             # Log that the merge was successful and log the shape of the merged dataset
@@ -563,7 +603,17 @@ for subx_model in models_to_process:
                     if 'P' in ds_allvars[var].dims:
                         # Update the set of all pressure levels with those from the variable
                         all_pressure_levels.update(ds_allvars[var].coords['P'].values)
-                
+
+                # Also union in whatever pressure levels the group already has on disk.
+                # A provider's currently-configured var_levels can supply a narrower
+                # set of levels than the archive's historical P axis (e.g. a provider
+                # config change that only fetches 1-2 levels going forward, while the
+                # archive holds 4 levels from earlier history) -- reindexing only to
+                # this run's own levels would shrink the P axis and break the append.
+                # Levels no longer supplied are simply NaN for these new dates.
+                if group_exists and 'P' in existing_ds.dims:
+                    all_pressure_levels.update(existing_ds['P'].values)
+
                 # Convert the set of all pressure levels to a sorted numpy array
                 # and define it as the master pressure levels
                 master_P = np.array(sorted(all_pressure_levels))
@@ -584,21 +634,18 @@ for subx_model in models_to_process:
         ### Determine whether every configured variable has at least one source file
         ### this run. Section 3 (appending brand-new start times) writes ds_allvars
         ### via to_zarr(..., append_dim="S"): any variable entirely absent from
-        ### ds_allvars.data_vars simply never gets touched by that write, so its
-        ### zarr array's S length falls behind the other variables' -- permanently
-        ### breaking every future read of the group. (Variables that ARE present
-        ### but only cover some of the new start times are safe: xr.merge's outer
-        ### join fills the gaps with NaN, so every present variable's array still
-        ### grows by the same amount.) If any configured variable has zero files,
-        ### Section 3 is skipped below and retried automatically next run.
+        ### ds_allvars.data_vars would simply never get touched by that write, so
+        ### its zarr array's S length would fall behind the other variables' --
+        ### permanently breaking every future read of the group. (Variables that
+        ### ARE present but only cover some of the new start times are already
+        ### safe: xr.merge's outer join fills the gaps with NaN, so every present
+        ### variable's array still grows by the same amount.) For variables with
+        ### zero files this run, NaN-fill them below (see STEP 4b) so every
+        ### configured variable's array always grows together; the NaN-to-real
+        ### backfill check (a separate, later pass) fills in real data once a
+        ### source file becomes available for that date.
         required_vars = subx_model['variables']
         vars_with_no_files_this_run = [v for v in required_vars if v not in ds_allvars.data_vars]
-        if vars_with_no_files_this_run:
-            logger.warning(
-                f"  ⚠ No source files this run for {vars_with_no_files_this_run}; "
-                f"new start times will be held back to avoid growing only some "
-                f"variables' arrays (existing-time variable backfills are unaffected)."
-            )
 
         ### Compare the variables and times in the merged dataset from qlcs to those in the model group to see what is missing
         # Log that the comparison of variables and times is beginning
@@ -628,7 +675,50 @@ for subx_model in models_to_process:
             logger.error(traceback.format_exc())
             model_results.append((this_model, False, f"Missing data check error: {str(e)}"))
             continue
-        
+
+        ### STEP 5b: NaN-fill any configured variable that had zero source files
+        ### this run, for the new start times about to be appended. This keeps
+        ### every variable's S-dimension growing in lockstep -- the actual
+        ### constraint zarr enforces -- rather than holding the whole date back
+        ### (the previous workaround). A later, separate backfill pass replaces
+        ### the NaN with real data once a source file becomes available for
+        ### that date. Only variables already present in the group are handled
+        ### here; a variable missing from the group entirely is Section 2's job.
+        if vars_with_no_files_this_run and len(missing_times) > 0:
+            logger.info("")
+            logger.info(
+                f"ℹ No source file(s) this run for {vars_with_no_files_this_run}; "
+                f"NaN-filling {len(missing_times)} new start time(s) for now. "
+                f"Real data will replace the NaN automatically once a source "
+                f"file is available for these dates."
+            )
+            for v in vars_with_no_files_this_run:
+                if v not in existing_vars:
+                    # Brand-new variable with zero files this run -- nothing to
+                    # append for it yet either way; Section 2 picks it up once
+                    # a file exists for at least one already-existing time.
+                    continue
+                needs_p = 'P' in existing_ds[v].dims
+                # Use an already-present variable in ds_allvars as the shape/coord
+                # template so Y/X/M/L/P match exactly what's being written this
+                # run for the rest of the model -- avoids any cross-source
+                # coordinate precision mismatch between ds_allvars (freshly read
+                # local files) and existing_ds (the group's stored data).
+                template_name = next(
+                    (tv for tv in ds_allvars.data_vars if ('P' in ds_allvars[tv].dims) == needs_p),
+                    None,
+                )
+                if template_name is None:
+                    logger.warning(
+                        f"  ⚠ No suitable template variable this run to NaN-fill {v} "
+                        f"(needs_p={needs_p}); deferring to a later run."
+                    )
+                    continue
+                nan_da = xr.full_like(ds_allvars[template_name], np.nan).astype(existing_ds[v].dtype)
+                nan_da.name = v
+                ds_allvars[v] = nan_da
+                logger.info(f"  NaN-filled {v} (template={template_name})")
+
         ### Write or append the forecast data based on the data already existing in the model group on the repository
         # Log that the writing/appending step is beginning
         logger.info("")
@@ -828,17 +918,10 @@ for subx_model in models_to_process:
                 continue
         
         ##### 3. In the case that the model group already exists and new start times need to be added #####
-        if len(missing_times) > 0 and len(existing_times) > 0 and vars_with_no_files_this_run:
-            logger.info("")
-            logger.info(
-                f"ℹ Holding back {len(missing_times)} new start time(s): missing files for "
-                f"{vars_with_no_files_this_run} this run. Will retry once all variables are available."
-            )
-
-        # If there are one or more new times to be added to the model group, and every configured
-        # variable has at least one file this run (see the coverage check above) -- otherwise the
-        # append would grow some variables' S dimension without the others and corrupt the group.
-        if len(missing_times) > 0 and len(existing_times) > 0 and not vars_with_no_files_this_run:
+        # Any variable missing a file this run has already been NaN-filled (see STEP 5b
+        # above) so that every configured variable's S dimension grows together here,
+        # regardless of which providers were slow/flaky this run.
+        if len(missing_times) > 0 and len(existing_times) > 0:
             # Log that there are new start times to be added and the new start times will be appended to the existing model group
             logger.info("")
             logger.info("SECTION 3: Appending new start times")
@@ -919,6 +1002,85 @@ for subx_model in models_to_process:
                 model_results.append((this_model, False, f"Section 3 error: {str(e)}"))
                 continue
         
+        ##### 4. Check recent existing start times for NaN slots that can now be backfilled with real data #####
+        # Independent of whether any new start times were appended above -- this looks
+        # backward over dates already committed to the group (as of the read-only
+        # existing_ds snapshot from STEP 1), in case a source file that was missing on
+        # an earlier run has since become available (e.g. a slow/rotating provider
+        # caught up, or a manual recovery fetch was performed). Writes go directly
+        # into the already-correctly-shaped existing array via a raw zarr region
+        # write (no resize/append needed, unlike Sections 1-3) and are covered by
+        # the same STEP 7 verify-before-commit gate below.
+        backfill_window = 4
+        if group_exists and len(existing_times) > 0:
+            logger.info("")
+            logger.info("SECTION 4: Checking recent existing start times for NaN backfill")
+
+            try:
+                sorted_existing_times = existing_times.sort_values()
+                recent_times = sorted_existing_times[-backfill_window:]
+                backfill_count = 0
+
+                for var in subx_model['variables']:
+                    if var not in existing_vars:
+                        continue
+
+                    existing_var_da = existing_ds[var]
+
+                    for s_val in recent_times:
+                        # Position in the array's own storage order -- append-only
+                        # writes never reorder previously-existing S entries, so
+                        # this position stays valid even after Section 3 appended
+                        # brand-new dates beyond it this same run.
+                        pos = int(np.flatnonzero(existing_ds['S'].values == s_val)[0])
+
+                        is_nan = bool(existing_var_da.isel(S=pos).isnull().all().compute())
+                        if not is_nan:
+                            continue
+
+                        date_str = pd.Timestamp(s_val).strftime('%Y%m%d')
+                        f = (f"{input_path}/{this_group}-{this_local_model}/{datatype}/{var}/"
+                             f"{var}_{this_group}-{this_local_model}_{date_str}.daily.nc")
+                        if not os.path.exists(f) or os.path.getsize(f) == 0:
+                            continue
+
+                        try:
+                            src_ds = xr.open_dataset(f, engine='netcdf4', chunks={})
+                            src_da = src_ds[var]
+                            if 'P' in src_da.dims:
+                                valid = ~src_da.isel(S=0, M=0, L=0, P=0).isnull().all(dim=('Y', 'X'))
+                            else:
+                                valid = ~src_da.isel(S=0, M=0, L=0).isnull().all(dim=('Y', 'X'))
+                            if not bool(valid.compute()):
+                                logger.info(f"  {var} {date_str}: local file still all-NaN, skipping")
+                                continue
+
+                            # Align to the group's existing shape/coords for this
+                            # variable (dim order, P levels, dtype) before the raw
+                            # region write below.
+                            src_da = src_da.transpose(*[d for d in existing_var_da.dims if d in src_da.dims])
+                            if 'P' in existing_var_da.dims:
+                                src_da = src_da.reindex(P=existing_var_da['P'].values)
+                            src_da = src_da.isel(S=0).astype(existing_var_da.dtype)
+                            values = src_da.values
+
+                            za = zarr.open_array(write_store, path=f"{group_name}/{var}")
+                            za[pos:pos + 1, ...] = values[np.newaxis, ...]
+
+                            backfill_count += 1
+                            commit_messages.append(f"Backfilled {var} for {date_str} with real data")
+                            logger.info(f"  ✓ Backfilled {var} for {date_str}")
+
+                        except Exception as e:
+                            logger.warning(f"  ⚠ Failed to backfill {var} {date_str}: {str(e)}")
+
+                if backfill_count == 0:
+                    logger.info("  No NaN slots found with newly-available real data")
+
+            except Exception as e:
+                logger.error(f"✗ Section 4 failed: {str(e)}")
+                logger.error(traceback.format_exc())
+
         ### Check the edits made to the data in the model group before committing ###
         # Log that the verification step is beginning
         logger.info("")
