@@ -519,7 +519,8 @@ def _snap_grid_coords(ds: "xr.Dataset") -> "xr.Dataset":
     later merged across variables/models.
     """
     import numpy as np
-    coords = {name: np.round(ds[name].values) for name in ("lat", "lon") if name in ds.coords}
+    names = [n for n in ("lat", "lon", "LAT", "LON") if n in ds.coords]
+    coords = {name: np.round(ds[name].values) for name in names}
     return ds.assign_coords(**coords) if coords else ds
 
 
@@ -1223,67 +1224,154 @@ def _download_eccc_members_to_subx(
 # ── end ECCC helpers ───────────────────────────────────────────────────────────
 
 
-# ── RSMAS format conversion ────────────────────────────────────────────────────
-# RSMAS files use uppercase dim names (TIME, LAT, LON), cftime NoLeap calendar,
-# uppercase variable names (PR, TS, etc.), and a lev_p coordinate for pressure.
+# ── RSMAS-specific download helpers ───────────────────────────────────────────
+# RSMAS publishes 9 ensemble members (m01-m09) per date, one file per
+# variable/level, e.g. pr_sfc_CCSM4_28jun2026_00z_d01_d45_m01.nc. Files use
+# uppercase dim/var names (TIME, LAT, LON, PR) and a cftime NoLeap calendar.
 
-def _convert_rsmas_to_subx(path: Path, var: str, init_date: str) -> None:
-    """Convert a raw RSMAS file to SubX format (S, M, [P,] L, Y, X) in-place."""
+_RSMAS_VAR_PREFIX: Dict[str, str] = {
+    "pr":   "pr_sfc",
+    "rlut": "rlut_toa",
+    "tas":  "tas_2m",
+    "ts":   "ts_sfc",
+}
+
+_RSMAS_MEMBERS = ["m%02d" % i for i in range(1, 10)]
+
+
+def _rsmas_prefix(var: str, var_levels: Dict[str, int]) -> Optional[str]:
+    """Resolve the RSMAS filename prefix for a variable.
+
+    ua/va/zg are published as separate single-level files (ua_200_*,
+    ua_850_*, ...); the configured level (ingest.direct.rsmas.var_levels)
+    picks which one. Other variables are single-level with a fixed prefix.
+    """
+    if var in var_levels:
+        return f"{var}_{var_levels[var]}"
+    return _RSMAS_VAR_PREFIX.get(var)
+
+
+def _list_rsmas_dates(ftp_url: str, ftp_email: str, var: str, var_levels: Dict[str, int]) -> List[str]:
+    """Return available init dates for a variable on the RSMAS FTP, newest first."""
+    prefix = _rsmas_prefix(var, var_levels)
+    if not prefix:
+        return []
+    entries = _ftp_list(ftp_url, ftp_email)
+    dates: set = set()
+    for entry in entries:
+        name = entry.name.lower()
+        if not (name.startswith(prefix.lower() + "_ccsm4_") and name.endswith("_m01.nc")):
+            continue
+        for d in _extract_dates(entry.name):
+            dates.add(d)
+    return sorted(dates, reverse=True)
+
+
+def _download_rsmas_to_subx(
+    ftp_url: str,
+    ftp_email: str,
+    var: str,
+    init_date: str,
+    out_file: Path,
+    var_levels: Dict[str, int],
+) -> bool:
+    """Download all 9 RSMAS ensemble member files, merge into SubX format.
+
+    Output dimensions: (S: 1, M: 9, [P: 1,] L: 45, Y: 181, X: 360)
+    """
     import numpy as np
     import pandas as pd
     import xarray as xr
 
+    prefix = _rsmas_prefix(var, var_levels)
+    if not prefix:
+        print(f"[DIRECT][RSMAS] Variable '{var}' not available on RSMAS FTP; skipping.")
+        return False
+
+    rsmas_date = _esrl_date_str(init_date)
     init_ts = pd.Timestamp(init_date)
-    ds = xr.open_dataset(path)
+    parsed = urlparse(ftp_url)
+    base_path = parsed.path.rstrip("/")
 
-    # TIME uses cftime NoLeap; convert to plain timestamps
-    time_vals = ds["TIME"].values
-    if hasattr(time_vals[0], "year"):
-        valid_times = [
-            pd.Timestamp(t.year, t.month, t.day, t.hour, t.minute, t.second)
-            for t in time_vals
-        ]
-    else:
-        valid_times = list(pd.DatetimeIndex(time_vals))
+    member_arrays: List = []
+    lead_days_ref: Optional[np.ndarray] = None
 
-    lead_days = np.array(
-        [(v - init_ts).total_seconds() / 86400.0 for v in valid_times],
-        dtype=np.float32,
-    )
+    def _fetch_member(member: str, tmpdir: str) -> "xr.Dataset":
+        fname = f"{prefix}_CCSM4_{rsmas_date}_00z_d01_d45_{member}.nc"
+        remote_path = f"{base_path}/{fname}"
+        tmp_file = Path(tmpdir) / fname
+        print(f"[DIRECT][RSMAS] Downloading ftp://{parsed.hostname}{remote_path}")
+        ftp = FTP(parsed.hostname, timeout=60)
+        try:
+            _ftp_login_with_fallback(ftp, ftp_email)
+            with open(tmp_file, "wb") as f:
+                ftp.retrbinary(f"RETR {remote_path}", f.write)
+        except Exception as exc:
+            raise RuntimeError(f"FTP download failed for {fname}: {exc}") from exc
+        finally:
+            try:
+                ftp.quit()
+            except Exception:
+                pass
+        # RSMAS uses a cftime NoLeap calendar; decode normally (unlike ESRL/CFS/
+        # GEFS, which need decode_times=False) then convert to plain timestamps.
+        return _snap_grid_coords(xr.open_dataset(tmp_file))
 
-    # Locate variable (RSMAS uses uppercase: PR → pr)
-    var_in_file = next(
-        (v for v in ds.data_vars if v.lower() == var.lower() and "bnd" not in v.lower()),
-        None,
-    )
-    if var_in_file is None:
-        print(f"[DIRECT][RSMAS][WARN] '{var}' not found in {path.name}; available: {list(ds.data_vars)}")
-        return
+    def _lead_days_rsmas(ds: "xr.Dataset") -> "np.ndarray":
+        time_vals = ds["TIME"].values
+        if hasattr(time_vals[0], "year"):
+            valid_times = [
+                pd.Timestamp(t.year, t.month, t.day, t.hour, t.minute, t.second)
+                for t in time_vals
+            ]
+        else:
+            valid_times = list(pd.DatetimeIndex(time_vals))
+        return np.array(
+            [(v - init_ts).total_seconds() / 86400.0 for v in valid_times],
+            dtype=np.float32,
+        )
 
-    # Drop bounds variables and their dimension
-    drop = [v for v in ds.data_vars if "bnd" in v.lower() or "bound" in v.lower()]
-    ds = ds.drop_vars(drop, errors="ignore")
+    def _data_var(ds: "xr.Dataset") -> str:
+        candidates = [v for v in ds.data_vars if "bnd" not in v.lower() and "bound" not in v.lower()]
+        return candidates[0]
 
-    lev_name = next((c for c in ["lev_p", "lev", "plev"] if c in ds.coords), None)
-    rename_map = {"TIME": "L", "LAT": "Y", "LON": "X"}
-    if lev_name:
-        rename_map[lev_name] = "P"
+    with tempfile.TemporaryDirectory() as tmpdir:
+        for m_idx, member in enumerate(_RSMAS_MEMBERS, start=1):
+            try:
+                ds = _fetch_member(member, tmpdir)
+                if lead_days_ref is None:
+                    lead_days_ref = _lead_days_rsmas(ds)
+                drop = [v for v in ds.data_vars if "bnd" in v.lower() or "bound" in v.lower()]
+                ds = ds.drop_vars(drop, errors="ignore")
+                rename_map = {"TIME": "L", "LAT": "Y", "LON": "X"}
+                lev_name = next((c for c in ["lev_p", "lev", "plev"] if c in ds.coords), None)
+                if lev_name:
+                    rename_map[lev_name] = "P"
+                da_member = ds[_data_var(ds)].rename(rename_map).assign_coords(L=lead_days_ref)
+                da_member["L"].attrs["units"] = "days"
+                if "P" in da_member.coords:
+                    da_member = da_member.assign_coords(P=da_member["P"].values.astype(int))
+                da_member = da_member.expand_dims(M=[m_idx])
+                ds.close()
+            except Exception as exc:
+                print(f"[DIRECT][RSMAS][WARN] Failed for member {member}: {exc}", file=sys.stderr)
+                return False
+            member_arrays.append(da_member)
 
-    da = ds[var_in_file].rename(rename_map).assign_coords(L=lead_days)
-    da["L"].attrs["units"] = "days"
-    if "P" in da.coords:
-        da = da.assign_coords(P=da["P"].values.astype(int))
+        combined = xr.concat(member_arrays, dim="M")
+        combined = combined.expand_dims(S=[np.datetime64(init_ts, "ns")])
+        dim_order = ("P", "S", "M", "L", "Y", "X") if "P" in combined.dims else ("S", "M", "L", "Y", "X")
+        combined = combined.transpose(*[d for d in dim_order if d in combined.dims])
+        ds_out = combined.to_dataset(name=var)
 
-    da = da.expand_dims(S=[np.datetime64(init_ts, "ns")], M=[1])
-    da.name = var
-    ds_out = da.to_dataset()
-    ds.close()
+        out_file.parent.mkdir(parents=True, exist_ok=True)
+        tmp = out_file.with_suffix(".tmp.nc")
+        ds_out.to_netcdf(tmp)
+        tmp.rename(out_file)
 
-    tmp = path.with_suffix(".tmp.nc")
-    ds_out.to_netcdf(tmp)
-    tmp.rename(path)
+    return True
 
-# ── end RSMAS helpers ──────────────────────────────────────────────────────────
+# ── end RSMAS multi-member helpers ────────────────────────────────────────────
 
 
 def _provider_from_source(source: str, group: str, server_model: str) -> str:
@@ -1328,6 +1416,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     ftp_email = _ftp_email(cfg)
     eccc_members = _cfg_eccc_members(cfg)
     eccc_var_levels = _cfg_eccc_var_levels(cfg)
+    rsmas_var_levels = _cfg_provider_var_levels(cfg, "rsmas")
     provider_url = _cfg_provider_url(cfg, provider)
 
     print(
@@ -1467,6 +1556,31 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         return 0
     # ── end GEFS ───────────────────────────────────────────────────────────────
 
+    if provider == "rsmas":
+        available = _list_rsmas_dates(provider_url, ftp_email, args.var, rsmas_var_levels)
+        if not available:
+            print(f"[DIRECT][RSMAS] No files found for var={args.var} at {provider_url}")
+            return 0
+        date_window_set = set(date_window)
+        matching = [d for d in available if d in date_window_set]
+        if not matching:
+            print(
+                f"[DIRECT][RSMAS] No files in lookback window for var={args.var} "
+                f"(window={date_window[-1]}..{date_window[0]})"
+            )
+            return 0
+        for init_date in matching:
+            out_file = target_dir / f"{args.var}_{args.group}-{args.local_model}_{init_date}.daily.nc"
+            if out_file.exists():
+                print(f"[DIRECT] Exists, skipping: {out_file}")
+                continue
+            ok = _download_rsmas_to_subx(provider_url, ftp_email, args.var, init_date, out_file, rsmas_var_levels)
+            if ok:
+                downloaded += 1
+        print(f"[DIRECT] Completed provider={provider} downloaded={downloaded}")
+        return 0
+    # ── end RSMAS ──────────────────────────────────────────────────────────────
+
     entries = _list_entries(provider_url, ftp_email, provider, date_window)
     if not entries:
         print(f"[DIRECT][WARN] No entries discovered at provider URL: {provider_url}")
@@ -1522,8 +1636,6 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         try:
             ok = _materialize_candidate(candidate, out_file, ftp_email, args.var, eccc_members)
             if ok:
-                if provider == "rsmas":
-                    _convert_rsmas_to_subx(out_file, args.var, init_date)
                 downloaded += 1
             else:
                 print(
