@@ -1,8 +1,18 @@
 #!/usr/bin/env bash
 # cron_subx.sh — weekly SubX forecast workflow cron wrapper
 #
-# Intended crontab entry (runs every Thursday at 18:00 UTC):
-#   0 18 * * 4  /home/kpegion/projects/subc_workflow/cron_subx.sh >> /home/kpegion/projects/subc_workflow/logs/cron.log 2>&1
+# Every run logs its own full output automatically to
+# logs/cron/subx_<timestamp>.log (see the `exec > >(tee ...)` line below), so
+# crontab entries don't need to redirect to a log file for that -- redirect to
+# /dev/null just to stop cron from emailing/dropping the handful of lines
+# printed before that tee is set up (e.g. a failure sourcing conda.sh).
+#
+# Intended crontab entries:
+#   # Full weekly pipeline, every Thursday at 18:00 UTC:
+#   0 18 * * 4  /home/kpegion/projects/subc_workflow/scripts/cron_subx.sh >/dev/null 2>&1
+#
+#   # Daily ingest-only top-up, so the Thursday run has less left to fetch:
+#   0 6 * * *   SUBX_STAGES=ingest /home/kpegion/projects/subc_workflow/scripts/cron_subx.sh >/dev/null 2>&1
 #
 # Optional overrides via environment variables:
 #   SUBX_CONFIG   — path to config YAML (default: config.yaml next to this script)
