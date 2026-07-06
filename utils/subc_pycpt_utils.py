@@ -13,9 +13,9 @@ Functions
 - safe_concat (robust xarray concat)
 - weekly_reduce (CPC Sat–Fri windows)
 - save_manifest (JSON)
-- resolve_threshold_path (template vs. GEFS fallback)
-- compute_exceedance (generic thresholds)
-- plot_exceedance_summary, plot_exceedance_panels (Cartopy plots)
+
+Exceedance/threshold helpers (compute_exceedance, plot_exceedance_summary,
+plot_exceedance_panels) live in utils/exceedance_utils.py, not here.
 """
 
 import xarray as xr
@@ -143,31 +143,7 @@ def save_manifest(path: str, data: Dict) -> None:
     with open(path, 'w') as f:
         json.dump(data, f, indent=2, default=str)
 
-# ---------------------- Threshold path ---------------------- #
-
-def resolve_threshold_path(
-    template: str, percentile: int, modelkey: str, var: str,
-    gefs_fallback: Optional[str]
-) -> Optional[str]:
-    """
-    Resolve a threshold NetCDF path using a generic template, else fall back to GEFS path.
-
-    template:
-      e.g., '/.../percentile{percentile}_{modelkey}_thres_{var}.nc'
-    gefs_fallback:
-      e.g., '/.../percentile{percentile}_GEFSthres_pr.nc'
-    """
-    if template:
-        path = template.format(percentile=percentile, modelkey=modelkey, var=var)
-        if os.path.exists(path):
-            return path
-    if gefs_fallback:
-        fb = gefs_fallback.format(percentile=percentile)
-        if os.path.exists(fb):
-            return fb
-    return None
-
 __all__ = [
     'latest_thursday', 'fcst_week_dates', 'ensure_lon', 'safe_concat',
-    'weekly_reduce', 'save_manifest', 'resolve_threshold_path',
+    'weekly_reduce', 'save_manifest',
 ]

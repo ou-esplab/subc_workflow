@@ -44,10 +44,8 @@ class ForecastSmokeTests(unittest.TestCase):
                         "  - { group: EMC, name: GEFSv12_CPC, vars: [pr], levels: [sfc] }",
                         "exceedance:",
                         "  var: pr",
-                        "  model_id: EMC-GEFSv12_CPC",
                         "  percentile: 95",
                         "  window_days: 7",
-                        "  modelkey: GEFSthres",
                         "",
                     ]
                 ),

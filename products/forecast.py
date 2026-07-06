@@ -13,11 +13,12 @@ What this does
      - precipitation (pr*) is summed after converting to mm/day
      - everything else is averaged
 5) Builds SUBC‑MME as the model-mean of weekly anomalies.
-6) Computes "exceedance probability" for all available models using
-    precomputed percentile fields (per-model, per-MMDD files).
+6) Computes a single pooled multi-model-ensemble "exceedance probability" map
+    (every model's ensemble members pooled together) using precomputed
+    percentile fields (per-model, per-MMDD files).
 7) Saves:
    - NetCDF of all models + MME weekly anomalies
-   - Summary exceedance PNG per configured region
+   - Single MME exceedance NetCDF + PNG per configured region/week
    - manifest.json
 
 Inputs (from config.yaml)
@@ -25,7 +26,7 @@ Inputs (from config.yaml)
 paths:
   rt_root, hc_root, out_weekly
 models:  list of {group,name,vars,levels}
-exceedance: {model_id, var, percentile, window_days, modelkey}
+exceedance: {var, percentile, window_days, lev, max_fallback_days}
 regions:    list of { name, subx:{lon,lat}, pycpt:{lon,lat} }
 lon_convention: "0_360" or "negpos"
 
@@ -65,16 +66,6 @@ def _env_flag(name: str) -> bool:
 def _debug_print(msg: str) -> None:
     if DEBUG:
         print(msg)
-
-
-def _remove_stale_exceedance_outputs(out_dir: str, model_id: str, var: str, fcstdate: str, suffix: str) -> None:
-    pattern = os.path.join(out_dir, f"exceed_{model_id}_{var}_*_{fcstdate}*.{suffix}")
-    for path in glob.glob(pattern):
-        try:
-            os.remove(path)
-            _debug_print(f"[INFO] Removed stale exceedance output: {path}")
-        except OSError as exc:
-            print(f"[WARN] Failed to remove stale output {path}: {exc}")
 
 
 def _select_week_window_from_probs(
@@ -684,15 +675,12 @@ def _plot_weekly_panels(
     print(f"[SAVE] {out_png}")
 
 
-def _plot_exceedance_region_panels(
+def _plot_exceedance_mme_map(
     out_images: str,
     fcstdate: str,
     region_name: str,
     var: str,
-    panel_models: list[str],
-    model_probs: dict[str, xr.DataArray],
-    model_init_dates: dict[str, pd.Timestamp],
-    model_ensemble_counts: dict[str, int],
+    probs: xr.DataArray,
     pct: int = 95,
     week_num: int = 1,
     week_start: pd.Timestamp | None = None,
@@ -700,7 +688,6 @@ def _plot_exceedance_region_panels(
     global_projection: bool = False,
     mme_member_count: int = 0,
 ) -> None:
-    import math
     import matplotlib.pyplot as plt
     import matplotlib.colors as mcolors
     import cartopy.crs as ccrs
@@ -715,106 +702,74 @@ def _plot_exceedance_region_panels(
 
     valid_str = f"{wk_start.strftime('%b %d')} – {wk_end.strftime('%b %d, %Y')}"
 
-    if not panel_models:
-        return
-
-    ncols = 3
-    nrows = math.ceil(len(panel_models) / ncols)
     projection = ccrs.Robinson() if global_projection else ccrs.PlateCarree()
-    fig, axes = plt.subplots(
-        nrows,
-        ncols,
-        figsize=(4.7 * ncols, 3.15 * nrows + 1.7),
-        subplot_kw={"projection": projection},
-        squeeze=False,
-    )
+    fig, ax = plt.subplots(figsize=(9.4, 5.7), subplot_kw={"projection": projection})
     fig.suptitle(
-        f"Probability of Exceeding {pct}th Percentile Any Day During Week {week_num} ({valid_str})\n{var} - {region_name}",
-        fontsize=14,
-        y=0.985,
+        f"Probability of Exceeding {pct}th Percentile Any Day During Week {week_num} ({valid_str})\n"
+        f"{var} - {region_name} | MME Blend, {int(mme_member_count)} Ens",
+        fontsize=13,
+        y=0.98,
     )
 
     levels = np.arange(5, 95, 5)
     cmap = plt.get_cmap("Reds", len(levels) - 1)
     norm = mcolors.BoundaryNorm(levels, cmap.N)
 
-    extent = None
-    for probs in model_probs.values():
-        data = _select_week_window_from_probs(probs, wk_end, week_num, region_name)
-        if "lat" in data.dims and "lon" in data.dims and data.sizes.get("lat", 0) and data.sizes.get("lon", 0):
-            lon_vals = np.asarray(data["lon"].values, dtype=float)
-            lat_vals = np.asarray(data["lat"].values, dtype=float)
-            if lon_vals.size and lat_vals.size:
-                extent = [float(np.nanmin(lon_vals)), float(np.nanmax(lon_vals)), float(np.nanmin(lat_vals)), float(np.nanmax(lat_vals))]
-                break
+    data = _select_week_window_from_probs(probs, wk_end, week_num, region_name)
+
+    if "lat" in data.dims and "lon" in data.dims and data.sizes.get("lat", 0) and data.sizes.get("lon", 0):
+        lon_vals = np.asarray(data["lon"].values, dtype=float)
+        lat_vals = np.asarray(data["lat"].values, dtype=float)
+        if lon_vals.size and lat_vals.size:
+            extent = [float(np.nanmin(lon_vals)), float(np.nanmax(lon_vals)), float(np.nanmin(lat_vals)), float(np.nanmax(lat_vals))]
+        else:
+            extent = None
+    else:
+        extent = None
+
+    if global_projection:
+        ax.set_global()
+    elif extent is not None:
+        ax.set_extent(extent, crs=ccrs.PlateCarree())
+    ax.coastlines("110m", linewidth=0.8)
+    ax.add_feature(cfeature.BORDERS, linewidth=0.4)
+    if not global_projection:
+        ax.add_feature(cfeature.STATES, linewidth=0.2)
 
     mappable = None
-    for idx, model_id in enumerate(panel_models):
-        row, col = divmod(idx, ncols)
-        ax = axes[row][col]
-        if global_projection:
-            ax.set_global()
-        elif extent is not None:
-            ax.set_extent(extent, crs=ccrs.PlateCarree())
-        ax.coastlines("110m", linewidth=0.8)
-        ax.add_feature(cfeature.BORDERS, linewidth=0.4)
-        if not global_projection:
-            ax.add_feature(cfeature.STATES, linewidth=0.2)
+    if "lat" not in data.dims or "lon" not in data.dims:
+        ax.text(0.5, 0.5, "Non-map output", transform=ax.transAxes, ha="center", va="center", fontsize=10)
+    elif data.sizes.get("lat", 0) == 0 or data.sizes.get("lon", 0) == 0:
+        ax.text(0.5, 0.5, "No data", transform=ax.transAxes, ha="center", va="center", fontsize=10)
+    elif np.isfinite(data.values).any():
+        vals = np.asarray(data.values, dtype=float)
+        finite_vals = vals[np.isfinite(vals)]
+        if finite_vals.size:
+            q10, q50, q90 = np.nanpercentile(finite_vals, [10, 50, 90])
+            _debug_print(
+                f"[EXCEED-DIAG] region={region_name} model=SUBC-MME "
+                f"min={np.nanmin(finite_vals):.1f} p10={q10:.1f} p50={q50:.1f} p90={q90:.1f} "
+                f"max={np.nanmax(finite_vals):.1f} std={np.nanstd(finite_vals):.2f}"
+            )
+        mappable = ax.contourf(
+            data["lon"],
+            data["lat"],
+            data,
+            levels=levels,
+            cmap=cmap,
+            norm=norm,
+            transform=ccrs.PlateCarree(),
+            extend="both",
+        )
+    else:
+        ax.text(0.5, 0.5, "No data", transform=ax.transAxes, ha="center", va="center", fontsize=10)
 
-        probs = model_probs.get(model_id)
-        if probs is None:
-            ax.text(0.5, 0.5, "Missing model", transform=ax.transAxes, ha="center", va="center", fontsize=10)
-            ic_date_str = "N/A"
-            nens = "N/A"
-        else:
-            data = _select_week_window_from_probs(probs, wk_end, week_num, region_name)
+    try:
+        ax.spines["geo"].set_linewidth(0.8)
+    except Exception:
+        pass
 
-            if "lat" not in data.dims or "lon" not in data.dims:
-                ax.text(0.5, 0.5, "Non-map output", transform=ax.transAxes, ha="center", va="center", fontsize=10)
-            elif data.sizes.get("lat", 0) == 0 or data.sizes.get("lon", 0) == 0:
-                ax.text(0.5, 0.5, "No data", transform=ax.transAxes, ha="center", va="center", fontsize=10)
-            elif np.isfinite(data.values).any():
-                vals = np.asarray(data.values, dtype=float)
-                finite_vals = vals[np.isfinite(vals)]
-                if finite_vals.size:
-                    q10, q50, q90 = np.nanpercentile(finite_vals, [10, 50, 90])
-                    _debug_print(
-                        f"[EXCEED-DIAG] region={region_name} model={model_id} "
-                        f"min={np.nanmin(finite_vals):.1f} p10={q10:.1f} p50={q50:.1f} p90={q90:.1f} "
-                        f"max={np.nanmax(finite_vals):.1f} std={np.nanstd(finite_vals):.2f}"
-                    )
-                mappable = ax.contourf(
-                    data["lon"],
-                    data["lat"],
-                    data,
-                    levels=levels,
-                    cmap=cmap,
-                    norm=norm,
-                    transform=ccrs.PlateCarree(),
-                    extend="both",
-                )
-            else:
-                ax.text(0.5, 0.5, "No data", transform=ax.transAxes, ha="center", va="center", fontsize=10)
-
-            if model_id == "SUBC-MME":
-                ic_date_str = "Blend"
-                nens = int(mme_member_count)
-            else:
-                init_ts = model_init_dates.get(model_id)
-                ic_date_str = init_ts.strftime("%Y-%m-%d") if init_ts is not None else "Unknown"
-                nens = int(model_ensemble_counts.get(model_id, 0))
-
-        try:
-            ax.spines["geo"].set_linewidth(0.8)
-        except Exception:
-            pass
-        ax.set_title(f"{model_id} (IC: {ic_date_str}; {nens} Ens)", fontsize=10, pad=4)
-
-    for idx in range(len(panel_models), nrows * ncols):
-        row, col = divmod(idx, ncols)
-        axes[row][col].axis("off")
-
-    fig.subplots_adjust(top=0.90, bottom=0.16, left=0.04, right=0.98, wspace=0.07, hspace=0.30)
+    fig.subplots_adjust(top=0.85, bottom=0.16, left=0.04, right=0.98)
     if mappable is not None:
         cax = fig.add_axes([0.18, 0.06, 0.64, 0.03])
         cbar = fig.colorbar(mappable, cax=cax, orientation="horizontal")
@@ -822,7 +777,7 @@ def _plot_exceedance_region_panels(
 
     region_dir = os.path.join(out_images, region_name)
     os.makedirs(region_dir, exist_ok=True)
-    out_png = os.path.join(region_dir, f"exceed_panel_{var}_{region_name}_{fcstdate}_wk{week_num}.png")
+    out_png = os.path.join(region_dir, f"exceed_mme_{var}_{region_name}_{fcstdate}_wk{week_num}.png")
     fig.savefig(out_png, dpi=150)
     plt.close(fig)
     print(f"[SAVE] {out_png}")
@@ -1221,12 +1176,8 @@ def main():
     panel_models = [f"{m['group']}-{m['name']}" for m in cfg.get("models", [])]
     panel_models.append("SUBC-MME")
     _plot_legacy_weekly_products(ds_subx, out_images, out_data, fcstdate, panel_models, cfg)
-    panel_order = [
-        m for m in _resolve_panel_models([str(m) for m in ds_subx["model"].values], panel_models)
-        if m != "SUBC-MME"
-    ]
 
-    # ---- Exceedance for all available models ----
+    # ---- Exceedance for all available models (pooled into a single MME map) ----
     if args.skip_exceedance:
         print("[INFO] Skipping exceedance computation (--skip-exceedance)")
     elif ds_full_by_model:
@@ -1243,9 +1194,6 @@ def main():
             mmdd = pd.Timestamp(fcstdate).strftime('%m%d')
             processed_models = []
             available_models = [str(m) for m in ds_full['model'].values if str(m) != 'SUBC-MME']
-            exceedance_region_maps: dict[str, dict[str, xr.DataArray]] = {
-                r['name']: {} for r in cfg.get('regions', [])
-            }
             mme_counts_by_region: dict[str, xr.DataArray] = {}
             mme_members_by_region: dict[str, int] = {}
             _debug_print(
@@ -1309,8 +1257,6 @@ def main():
                         print(f"[WARN] No threshold within +/-{max_fallback_days} days for {mid}; skipping model.")
                     else:
                         print(f"[WARN] Missing threshold files for {mid} under: {thr_dir}")
-                    _remove_stale_exceedance_outputs(out_data, mid, var, fcstdate, "nc")
-                    _remove_stale_exceedance_outputs(out_images, mid, var, fcstdate, "png")
                     continue
                 if f"_{mmdd}." not in os.path.basename(thr_path):
                     _debug_print(f"[INFO] Using nearest threshold for {mid}: {os.path.basename(thr_path)}")
@@ -1335,8 +1281,6 @@ def main():
                     )
                     ens_dim = 'M' if 'M' in field.dims else ('member' if 'member' in field.dims else None)
                     model_nens = int(field.sizes.get(ens_dim, 0)) if ens_dim else 1
-                    probs = (counts / float(model_nens)) * 100.0
-                    probs.name = f"{var}_exceed_prob"
 
                     if region_name in mme_counts_by_region:
                         prev_counts, new_counts = xr.align(mme_counts_by_region[region_name], counts, join='inner')
@@ -1346,66 +1290,43 @@ def main():
                         mme_counts_by_region[region_name] = counts
                         mme_members_by_region[region_name] = model_nens
 
-                    #out_file = os.path.join(out_data, f"exceed_{mid}_{var}_{region_name}_{fcstdate}.nc")
-                    #probs.to_netcdf(out_file)
-
-                    # Compute valid date range from time_window coord for title
-                    if probs.sizes.get('time_window', 0) > 0 and np.issubdtype(probs['time_window'].dtype, np.datetime64):
-                        tw = probs['time_window'].values
-                        valid_start = pd.Timestamp(tw[0]).strftime('%b %d')
-                        valid_end = pd.Timestamp(tw[-1]).strftime('%b %d, %Y')
-                        valid_str = f"{valid_start} – {valid_end}"
-                    else:
-                        valid_str = "avg windows"
-
-                    exceedance_region_maps.setdefault(region_name, {})[mid] = probs
-
                 processed_models.append(mid)
 
             if not processed_models:
                 print("[WARN] Exceedance skipped (no model-specific threshold files found).")
             else:
-                for region_name, per_model_probs in exceedance_region_maps.items():
-                    mme_counts = mme_counts_by_region.get(region_name)
+                week0 = pd.Timestamp(fcstdate) + pd.Timedelta(days=2)  # Saturday
+                for region_name, mme_counts in mme_counts_by_region.items():
                     mme_nens = int(mme_members_by_region.get(region_name, 0))
-                    if mme_counts is not None and mme_nens > 0:
-                        mme_probs = (mme_counts / float(mme_nens)) * 100.0
-                        mme_probs.name = f"{var}_exceed_prob"
-                        per_model_probs["SUBC-MME"] = mme_probs
+                    if mme_nens <= 0:
+                        continue
+                    mme_probs = (mme_counts / float(mme_nens)) * 100.0
+                    mme_probs.name = f"{var}_exceed_prob"
 
-                    panel_models_with_mme = list(panel_order)
-                    if "SUBC-MME" not in panel_models_with_mme:
-                        panel_models_with_mme.append("SUBC-MME")
-
-                    week0 = pd.Timestamp(fcstdate) + pd.Timedelta(days=2)  # Saturday
                     for week_num in [1, 2, 3, 4]:
                         wk_start = week0 + pd.Timedelta(days=(week_num - 1) * 7)
                         wk_end = wk_start + pd.Timedelta(days=6)
 
-                        for model_id, probs_all_windows in per_model_probs.items():
-                            probs_week = _select_week_window_from_probs(
-                                probs_all_windows,
-                                wk_end,
-                                week_num,
-                                region_name,
-                            )
-                            if "time_window" in probs_week.coords and "time_window" not in probs_week.dims:
-                                probs_week = probs_week.drop_vars("time_window", errors="ignore")
-                            out_week_file = os.path.join(
-                                out_data,
-                                f"exceed_{model_id}_{var}_{region_name}_{fcstdate}_wk{week_num}.nc",
-                            )
-                            probs_week.to_netcdf(out_week_file)
+                        probs_week = _select_week_window_from_probs(
+                            mme_probs,
+                            wk_end,
+                            week_num,
+                            region_name,
+                        )
+                        if "time_window" in probs_week.coords and "time_window" not in probs_week.dims:
+                            probs_week = probs_week.drop_vars("time_window", errors="ignore")
+                        out_week_file = os.path.join(
+                            out_data,
+                            f"exceed_SUBC-MME_{var}_{region_name}_{fcstdate}_wk{week_num}.nc",
+                        )
+                        probs_week.to_netcdf(out_week_file)
 
-                        _plot_exceedance_region_panels(
+                        _plot_exceedance_mme_map(
                             out_images=out_images,
                             fcstdate=fcstdate,
                             region_name=region_name,
                             var=var,
-                            panel_models=panel_models_with_mme,
-                            model_probs=per_model_probs,
-                            model_init_dates=model_init_dates,
-                            model_ensemble_counts=model_ensemble_counts,
+                            probs=mme_probs,
                             pct=pct,
                             week_num=week_num,
                             week_start=wk_start,

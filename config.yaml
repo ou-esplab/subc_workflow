@@ -7,8 +7,6 @@ paths:
   out_weekly: /data/esplab/shared/model/initialized/subx/forecast/weekly
   out_daily: /data/esplab/shared/model/initialized/subx/forecast/daily
   pycpt_case_root: /data/esplab/shared/model/initialized/subx/forecast/weekly/pycpt
-  thresholds_template: /data/esplab/gbrown/GWSC/percentile{percentile}_{modelkey}_thres_{var}.nc
-  thresholds_gefs_pr: /data/esplab/gbrown/GWSC/percentile{percentile}_GEFSthres_pr.nc
 models:
   - { group: ECCC, name: GEPS8,            vars: [pr, rlut, tas, ts, ua, va, zg], levels: [sfc, sfc, 2m, sfc, 200, 200, 500] }
   - { group: EMC,  name: GEFSv12_CPC,      vars: [pr, tas, zg],                   levels: [sfc, 2m, 500] }
@@ -87,10 +85,8 @@ exceedance:
   var: pr
   lev: sfc
   max_fallback_days: 7
-  model_id: EMC-GEFSv12_CPC
   percentile: 95
   window_days: 7
-  modelkey: GEFSthres
 pycpt_regions:
   - Venezuela
   - Iran
