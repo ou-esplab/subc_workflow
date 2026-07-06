@@ -11,8 +11,12 @@
 #   # Full weekly pipeline, every Thursday at 18:00 UTC:
 #   0 18 * * 4  /home/kpegion/projects/subc_workflow/scripts/cron_subx.sh >/dev/null 2>&1
 #
-#   # Daily ingest-only top-up, so the Thursday run has less left to fetch:
-#   0 6 * * *   SUBX_STAGES=ingest /home/kpegion/projects/subc_workflow/scripts/cron_subx.sh >/dev/null 2>&1
+#   # Daily ingest + arraylake top-up, so the Thursday run has less left to
+#   # fetch and the ArrayLake store stays close to real-time all week.
+#   # arraylake reads directly from the ingest output (paths.rt_root /
+#   # arraylake.input_root), so it doesn't need preprocess/products to have
+#   # run first.
+#   0 6 * * *   SUBX_STAGES="ingest arraylake" /home/kpegion/projects/subc_workflow/scripts/cron_subx.sh >/dev/null 2>&1
 #
 # Optional overrides via environment variables:
 #   SUBX_CONFIG   — path to config YAML (default: config.yaml next to this script)
