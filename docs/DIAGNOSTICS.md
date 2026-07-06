@@ -7,6 +7,7 @@ This document tracks diagnostic utilities and how to run ad hoc checks safely.
 - [utils/exceedance_diag.py](../utils/exceedance_diag.py): validates exceedance dimensionality and threshold selection behavior by model and region.
 - [utils/split_percentiles_by_mmdd.py](../utils/split_percentiles_by_mmdd.py): utility to split large percentile climatology files into per-MMDD threshold files.
 - [preprocess/validate_realtime.py](../preprocess/validate_realtime.py): primary input validation and optional shadow parity reporting.
+- [arraylake/repair_partial_variable_gaps.py](../arraylake/repair_partial_variable_gaps.py): one-time repair for ArrayLake groups whose per-variable `S`-arrays desynced under a since-fixed append bug (historical use — already run).
 
 ## Diagnostic Output Location
 

@@ -31,11 +31,11 @@ This document describes every file produced by the subc_workflow pipeline, organ
             data/   ← case NetCDFs
             plots/  ← RPSS and bias-correction PNGs
 
-somclass23:/home/kpegion/http/subc/forecasts/      ← publish (web server)
+somclass22:/home/kpegion/http/subc/forecasts/      ← publish (web server; somclass23 is the fallback host — same NFS home)
     images/{FCSTDATE}/  ← all PNGs
     images/Latest/      ← copy of most recent PNGs
     data/{FCSTDATE}/    ← all NetCDFs
-    index.html          ← updated date dropdown
+    index.html          ← updated date dropdown (source of truth: publish/web/index.html, tracked in this repo)
 ```
 
 ---
@@ -131,10 +131,12 @@ Syncs forecast data to the public ArrayLake cloud repository for remote access w
 | `{group}-{model}-forecast` | All forecast variables for one model. Zarr format. Dimensions: S (init date), M (member), L (lead day), Y (lat), X (lon), optionally P (pressure). |
 
 **Variables synced:** `pr`, `tas`, `rlut`, `ts`, `ua`, `va`, `zg` (configurable via `arraylake.variables`)  
-**Skipped models:** configurable via `arraylake.skip_models` (default: `NCEP-CFSv2`)
+**Skipped models:** configurable via `arraylake.skip_models` (default: `[NCEP-CFSv2, GMAO-GEOS_V3]`)
 
 **Notes:**
-- Only new initialization dates are appended on each run; existing data is not rewritten.
+- New initialization dates are appended for every configured variable together — if a source file is missing for one variable on a new date, that variable's slot is written as NaN so the group's per-variable `S`-dimension always grows in lockstep (this replaced an older "hold back the whole date" behavior that could silently desync arrays).
+- A separate backfill-check pass scans the most recent existing dates on every run and overwrites any NaN slot with real data (via a raw zarr region write) once a source file becomes available locally — NaN placeholders are not permanent; they self-heal as soon as the missing file shows up.
+- A one-time repair script, [arraylake/repair_partial_variable_gaps.py](../arraylake/repair_partial_variable_gaps.py), was used to fix 3 groups whose arrays had already desynced under the old behavior (historical use only; already run, kept for reference).
 - Public read access requires no API token (see `arraylake/read_subc_arraylake_public.ipynb`).
 
 ---
@@ -161,7 +163,7 @@ Default `pycpt_case_root`: `{out_weekly}/pycpt/`
 
 Transfers products to the web server for public access.
 
-**Destination host:** `somclass23` (override: `SUBX_WEB_HOST`)  
+**Destination host:** `somclass22`, with automatic fallback to `somclass23` if unreachable (same NFS home; override: `SUBX_WEB_HOST`)  
 **Destination base:** `/home/kpegion/http/subc/forecasts/` (override: `SUBX_WEB_BASE`)
 
 | Remote path | Content |
@@ -169,11 +171,12 @@ Transfers products to the web server for public access.
 | `images/{FCSTDATE}/` | All PNG files from `{out_weekly}/{FCSTDATE}/images/` |
 | `data/{FCSTDATE}/` | All NetCDF and JSON files from `{out_weekly}/{FCSTDATE}/data/` |
 | `images/Latest/` | Copy of the most recent forecast's images (updated each run) |
-| `index.html` | Web page date dropdown updated to include the new forecast date |
+| `index.html` | Web page date dropdown updated. **Local file is authoritative:** the publish stage edits the repo-tracked [publish/web/index.html](../publish/web/index.html), then deploys (scp) it to the web host on every run — the remote copy is never edited in place, so a manual edit made directly on the host is overwritten on the next publish. |
 
 **Notes:**
 - An optional subdirectory can be used for test publishes via `SUBX_PUBLISH_SUBDIR` (e.g., `test`).
 - Remote file counts are verified after transfer by default (`SUBX_PUBLISH_VERIFY_REMOTE=1`).
+- `index.html` is version-controlled at [publish/web/index.html](../publish/web/index.html); edit it in the repo, not on the web host.
 
 ---
 
@@ -214,7 +217,7 @@ The following `config.yaml` keys control output paths:
 | `paths.pycpt_case_root` | `{out_weekly}/pycpt` | PyCPT output root |
 | `arraylake.repo` | `ou-subc/subc-forecasts` | ArrayLake repository |
 | `arraylake.variables` | `[pr, tas, rlut, ts, ua, va, zg]` | Variables synced to ArrayLake |
-| `arraylake.skip_models` | `[NCEP-CFSv2]` | Models excluded from ArrayLake |
+| `arraylake.skip_models` | `[NCEP-CFSv2, GMAO-GEOS_V3]` | Models excluded from ArrayLake |
 | `exceedance.percentile` | `95` | Threshold for exceedance probability files |
 | `exceedance.window_days` | `7` | Rolling window length (days) for the exceedance calculation |
 | `pycpt_regions` | `[Venezuela, Iran, Mexico]` | Regions processed by PyCPT stage |

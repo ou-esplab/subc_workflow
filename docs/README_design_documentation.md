@@ -39,7 +39,7 @@ The shell wrapper delegates to [runners/cli.py](../runners/cli.py) and is not th
 - Prefer local archive compatibility over hard-coded remote assumptions.
 - Keep exceedance logic strict about spatial dimensionality.
 - Avoid silently averaging away unexpected dimensions.
-- Remove stale outputs when model eligibility changes between runs.
+- Produce one authoritative pooled multi-model-ensemble (MME) output per product/region/week rather than N per-model variants, to keep on-disk state unambiguous.
 
 ---
 
@@ -49,6 +49,9 @@ The shell wrapper delegates to [runners/cli.py](../runners/cli.py) and is not th
 - Download execution is delegated externally through `SUBX_DOWNLOAD_BIN`.
 - Smoke-test request generation is supported with `SUBX_DOWNLOAD_STUB=1`.
 - The workflow does not embed a guessed operational download endpoint.
+- Direct provider downloaders (ESRL, GMAO, ECCC, RSMAS, and CFS/GEFS mirrors) are implemented in [utils/download_subx_direct.py](../utils/download_subx_direct.py) as alternatives to IRIDL, selected per-model via `ingest.model_source` in [config.yaml](../config.yaml).
+- RSMAS publishes 9 ensemble members per date; the direct downloader fetches and stacks all 9 (a per-source bug previously kept only 1).
+- ECCC per-level tar selection uses `ingest.direct.eccc.var_levels` to pick the configured pressure level (e.g. 200/500 mb) instead of falling back to alphabetical file ordering, and embeds a proper size-1 `P` coordinate for the selected level.
 
 ---
 
@@ -84,7 +87,7 @@ Outputs include:
 
 ## Exceedance Design
 
-Shared exceedance utilities live in [utils/subc_pycpt_utils.py](../utils/subc_pycpt_utils.py).
+Shared exceedance utilities live in [utils/exceedance_utils.py](../utils/exceedance_utils.py) (date/xarray helpers unrelated to exceedance remain in [utils/subc_pycpt_utils.py](../utils/subc_pycpt_utils.py): `latest_thursday`, `fcst_week_dates`, `ensure_lon`, `safe_concat`, `weekly_reduce`, `save_manifest`).
 
 Design intent:
 
@@ -93,13 +96,14 @@ Design intent:
 - Compute exceedance probabilities from rolling windows along lead time.
 - Require summary outputs to remain strict 2D lat/lon maps for plotting.
 - Skip plotting when outputs are not map-like instead of collapsing dimensions implicitly.
+- Produce a single pooled multi-model-ensemble (MME) exceedance map per region/week — not per-model maps. Pooling combines every configured model's raw exceedance-member counts and ensemble sizes (sum counts across models, sum member counts across models, then divide once), which is methodologically distinct from averaging independently-computed per-model probabilities.
+- Fix the seam artifact in Global (Robinson-projection) exceedance maps by closing the 0–359° longitude grid with `cartopy.util.add_cyclic_point` before contouring.
 
 Threshold selection behavior:
 
 - Prefer exact MMDD threshold files.
 - Allow nearest-MMDD fallback only within `exceedance.max_fallback_days`.
-- Skip a model entirely when no threshold falls within that bound.
-- Remove stale exceedance outputs for skipped models so on-disk state reflects current logic.
+- Skip a model entirely when no threshold falls within that bound (it simply doesn't contribute to the pooled MME for that date).
 
 ---
 
@@ -130,7 +134,9 @@ Design intent:
 - Keep Arraylake integration optional and configuration-driven via `arraylake.enabled` in [config.yaml](../config.yaml).
 - Use workflow model configuration as the source of truth for group/model iteration.
 - Append only new start dates (`S`) to existing repository groups.
-- Avoid hard failures for missing model-variable files by skipping unavailable inputs.
+- Avoid hard failures for missing model-variable files: when a source file is missing for a configured variable on a new date, NaN-fill that variable's slot instead of holding back the whole date, so every configured variable's `S`-dimension grows together on every run.
+- Run a separate backfill-check pass ("Section 4" in `update_arraylake_fcsts.py`) on recent existing dates that overwrites NaN slots with real data via a raw zarr region write, once a source file becomes available locally — this keeps the group current without requiring a full re-append.
+- A one-time repair script, [arraylake/repair_partial_variable_gaps.py](../arraylake/repair_partial_variable_gaps.py), corrected groups desynced by the pre-fix behavior (historical/one-time use).
 - Load `ARRAYLAKE_TOKEN` from `arraylake/.env` at runtime.
 - Keep Arraylake as a sink stage; downstream stages do not read Arraylake outputs.
 
@@ -140,6 +146,9 @@ Design intent:
 
 The `publish` stage is responsible for syncing final workflow outputs for downstream web and stakeholder access.
 
+- The web frontend [publish/web/index.html](../publish/web/index.html) is version-controlled in this repo as the source of truth; the publish stage updates the local tracked copy's date dropdown, then deploys it to the remote host on every run instead of editing the remote file in place — this prevents drift from ad hoc SSH edits to the live site.
+- Destination host selection prefers `somclass22` and falls back to `somclass23` (same NFS home) if unreachable, unless `SUBX_WEB_HOST` is set explicitly.
+
 ---
 
 ## Code Organization
@@ -148,7 +157,9 @@ The `publish` stage is responsible for syncing final workflow outputs for downst
 - [products/forecast.py](../products/forecast.py): weekly products and exceedance generation
 - [preprocess/validate_realtime.py](../preprocess/validate_realtime.py): preflight validation
 - [postprocess/pycpt_s2s_realtime.py](../postprocess/pycpt_s2s_realtime.py): regional PyCPT execution
-- [utils/subc_pycpt_utils.py](../utils/subc_pycpt_utils.py): shared date, exceedance, plotting, and xarray helpers
+- [utils/subc_pycpt_utils.py](../utils/subc_pycpt_utils.py): shared date, xarray, and manifest helpers (`latest_thursday`, `fcst_week_dates`, `ensure_lon`, `safe_concat`, `weekly_reduce`, `save_manifest`)
+- [utils/exceedance_utils.py](../utils/exceedance_utils.py): exceedance/threshold helpers (`compute_exceedance`, `nearest_mmdd_threshold`, `plot_exceedance_summary`, `plot_exceedance_panels`)
+- [utils/download_subx_direct.py](../utils/download_subx_direct.py): direct-provider ingest downloaders (ESRL, GMAO, ECCC, RSMAS, CFS/GEFS mirrors)
 - [utils/split_percentiles_by_mmdd.py](../utils/split_percentiles_by_mmdd.py): threshold file splitter utility
 - [utils/exceedance_diag.py](../utils/exceedance_diag.py): dimensional and threshold-selection diagnostics
 

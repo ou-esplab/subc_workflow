@@ -176,7 +176,7 @@ For shadow-only ingest tests, set `ingest.primary_enabled: false`.
 
 - Validates realtime inputs.
 - Builds weekly anomaly outputs.
-- Computes exceedance products by region and model.
+- Computes a single pooled multi-model-ensemble (MME) exceedance product per region/week (precipitation, 95th percentile by default) — not a per-model breakdown.
 - Writes manifests and summary plots.
 
 ### `pycpt`
@@ -187,7 +187,7 @@ For shadow-only ingest tests, set `ingest.primary_enabled: false`.
 
 ### `arraylake`
 
-- Appends new realtime start dates into existing Arraylake groups.
+- Appends new realtime start dates into existing Arraylake groups; if a configured variable's source file is missing for a new date, that variable's slot is NaN-filled so the group's arrays stay in sync, and a later pass backfills NaN with real data once the file becomes available.
 - Script entrypoint: [arraylake/run_addvars_rt.sh](../arraylake/run_addvars_rt.sh) -> [arraylake/update_arraylake_fcsts.py](../arraylake/update_arraylake_fcsts.py).
 - Legacy note: [arraylake/addvars_rt.py](../arraylake/addvars_rt.py) is retained only as a deprecated reference and is not part of the live workflow path.
 - Only runs when `arraylake.enabled: true` in [config.yaml](../config.yaml).
@@ -205,6 +205,19 @@ ArrayLake variable selection behavior:
 - If a model override resolves to no valid variables, that model is skipped with a warning.
 - If `models[].vars` is omitted, the model uses the global `arraylake.variables` list.
 
+### `publish`
+
+- Deploys the repo-tracked [publish/web/index.html](../publish/web/index.html) — updating its date dropdown locally, then copying (scp) the result to the web host on every run.
+- **Do not hand-edit `index.html` on the web host directly** — edit the repo copy instead, since the next publish run overwrites the remote file from the local tracked copy.
+- Destination host prefers `somclass22`, falling back to `somclass23` (same NFS home) if unreachable, unless `SUBX_WEB_HOST` is set explicitly.
+
+### Scheduled Runs (cron)
+
+The production cron wrapper ([scripts/cron_subx.sh](../scripts/cron_subx.sh)) is set up with two crontab entries:
+
+- **Full weekly pipeline** — Thursdays at 18:00 UTC, default stage list (`ingest preprocess products publish arraylake`; `pycpt` disabled by default).
+- **Daily ingest + arraylake top-up** — every day at 06:00 UTC via `SUBX_STAGES="ingest arraylake"`, keeping ArrayLake close to real-time all week. This works because `arraylake` reads directly from ingest output (`paths.rt_root` / `arraylake.input_root`) and does not require `preprocess`/`products` to have run first.
+
 ---
 
 ## Exceedance Behavior
@@ -217,7 +230,7 @@ Important behavior:
 - Exact MMDD matches are preferred.
 - Nearest-MMDD fallback is allowed only within `+/- 7` days by default.
 - If no threshold file is within that range, the model is skipped.
-- If a model is skipped after a previous successful run, stale exceedance NetCDF and PNG outputs for that model/date are removed.
+- Exceedance is computed once per configured region/week by pooling every model that has a valid threshold for that date (summing raw exceedance-member counts and ensemble sizes across models, then dividing once) into a single `SUBC-MME` output — there are no per-model exceedance files to go stale.
 
 Example:
 

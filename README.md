@@ -39,16 +39,23 @@ Outputs and logs are written under `logs/YYYYMMDD_HHMMSS/subx/<init>/`.
 
 - User/operator run instructions: [docs/README_user_run_guide.md](docs/README_user_run_guide.md)
 - Workflow design and architecture: [docs/README_design_documentation.md](docs/README_design_documentation.md)
+- Forecast products guide (for users interpreting output maps/files): [docs/products_outputs.md](docs/products_outputs.md)
 
 ## Current Notes
 
 - Exceedance thresholds are selected per model from per-MMDD files.
 - Nearest-MMDD fallback is only allowed within `+/- 7` days by default via `exceedance.max_fallback_days` in [config.yaml](config.yaml).
-- If no threshold is close enough, the model is skipped and stale exceedance outputs for that model/date are removed.
+- If no threshold is close enough, that model is excluded from the pooled MME exceedance calculation for that date/region/week (no per-model files exist to remove).
+- Exceedance now produces a single pooled multi-model-ensemble (MME) map per region/week (`exceed_SUBC-MME_*.nc` / `exceed_mme_*.png`); no per-model exceedance outputs are produced.
 
 ## Recent Changes
 
 - 2026-03-29: Exceedance processing now enforces bounded threshold fallback (`max_fallback_days`) and removes stale model outputs when a model is skipped.
+- 2026-06-02: Added GMAO GEOS_V3 ingest support.
+- 2026-07-02: Added direct-download providers for RSMAS, CFS/GEFS, GMAO, and ESRL; fixed RSMAS to fetch all 9 ensemble members.
+- 2026-07-03: Replaced ArrayLake's hold-back-whole-date gate with NaN-fill-on-append plus a backfill-check pass; fixed ECCC per-level pressure selection and P-dimension embedding.
+- 2026-07-05: Added a daily `ingest arraylake` cron entry (06:00 UTC) to keep ArrayLake near-real-time between weekly runs.
+- 2026-07-06: Redesigned exceedance to produce a single pooled MME map per region/week (removed per-model exceedance outputs); fixed a Global-map seam bug; version-controlled `publish/web/index.html` as the deploy source of truth.
 
 ## Diagnostics
 
