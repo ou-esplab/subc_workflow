@@ -2,6 +2,9 @@
 set -euo pipefail
 trap 'code=$?; echo "[ERROR] publish_subx_web.sh failed (exit $code) at line $LINENO"; exit $code' ERR
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+LOCAL_INDEX="$SCRIPT_DIR/web/index.html"
+
 FCSTDATE="${1:-}"
 CONFIG_IN="${2:-config.yaml}"
 CONFIG="$(python3 -c 'import os,sys; print(os.path.abspath(sys.argv[1]))' "$CONFIG_IN")"
@@ -92,8 +95,16 @@ fi
 UPDATE_DATE_DROPDOWN="${SUBX_PUBLISH_UPDATE_DATE_DROPDOWN:-1}"
 if [[ "$UPDATE_DATE_DROPDOWN" == "1" ]]; then
   FCST_INDEX="${DEST_BASE}/index.html"
-  echo "==> [publish] Adding ${FCSTDATE} to date dropdown in ${FCST_INDEX}"
-  ssh -i "$SSH_KEY" "$DEST_HOST" "python3 - '${FCST_INDEX}' '${FCSTDATE}'" <<'PYEOF'
+  if [[ ! -f "$LOCAL_INDEX" ]]; then
+    echo "[FATAL] Local index.html not found: $LOCAL_INDEX" >&2
+    exit 2
+  fi
+  # index.html is tracked in this repo (publish/web/index.html) as the source
+  # of truth; update it locally, then deploy the result to the web host below.
+  # Do not edit the remote copy directly -- changes made there won't survive
+  # the next publish run, since this always overwrites it from the local file.
+  echo "==> [publish] Adding ${FCSTDATE} to date dropdown in ${LOCAL_INDEX}"
+  python3 - "$LOCAL_INDEX" "$FCSTDATE" <<'PYEOF'
 import sys, re
 
 index_file = sys.argv[1]
@@ -156,6 +167,12 @@ if changed:
 else:
   print("[publish] Index already up to date")
 PYEOF
+
+  echo "==> [publish] Deploying ${LOCAL_INDEX} to ${DEST_HOST}:${FCST_INDEX}"
+  if ! scp -i "$SSH_KEY" "$LOCAL_INDEX" "${DEST_HOST}:${FCST_INDEX}"; then
+    echo "[FATAL] Failed to deploy index.html to ${DEST_HOST}:${FCST_INDEX}" >&2
+    exit 3
+  fi
 fi
 
 echo "==> [publish] Complete: ${IMAGE_DEST} and ${DATA_DEST}"

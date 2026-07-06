@@ -692,6 +692,7 @@ def _plot_exceedance_mme_map(
     import matplotlib.colors as mcolors
     import cartopy.crs as ccrs
     import cartopy.feature as cfeature
+    import cartopy.util as cutil
 
     if week_start is None or week_end is None:
         wk_start = pd.Timestamp(fcstdate) + pd.Timedelta(days=(2 + (week_num - 1) * 7))
@@ -751,10 +752,18 @@ def _plot_exceedance_mme_map(
                 f"min={np.nanmin(finite_vals):.1f} p10={q10:.1f} p50={q50:.1f} p90={q90:.1f} "
                 f"max={np.nanmax(finite_vals):.1f} std={np.nanstd(finite_vals):.2f}"
             )
+        plot_vals = np.asarray(data.values, dtype=float)
+        plot_lon = np.asarray(data["lon"].values, dtype=float)
+        if global_projection:
+            # The lon grid runs 0..359 without wrapping back to 360/0, which
+            # leaves a visible seam at the prime meridian in a global map;
+            # add_cyclic_point closes the circle by duplicating the first
+            # column at the end.
+            plot_vals, plot_lon = cutil.add_cyclic_point(plot_vals, coord=plot_lon)
         mappable = ax.contourf(
-            data["lon"],
+            plot_lon,
             data["lat"],
-            data,
+            plot_vals,
             levels=levels,
             cmap=cmap,
             norm=norm,
