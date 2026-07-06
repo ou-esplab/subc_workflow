@@ -82,11 +82,27 @@ ingest:
         url: ftp://decadal.rsmas.miami.edu/pub/CPC_DATA/CCSM4/forecast/priority1/
   
 exceedance:
-  var: pr
-  lev: sfc
-  max_fallback_days: 7
-  percentile: 95
-  window_days: 7
+  - var: pr
+    lev: sfc
+    percentile: 95
+    direction: above
+    aggregate: any
+    window_days: 7
+    max_fallback_days: 7
+  - var: tas
+    lev: 2m
+    percentile: 95
+    direction: above
+    aggregate: any
+    window_days: 7
+    max_fallback_days: 7
+  - var: pr
+    lev: sfc
+    percentile: 5
+    direction: below
+    aggregate: all
+    window_days: 7
+    max_fallback_days: 7
 pycpt_regions:
   - Venezuela
   - Iran

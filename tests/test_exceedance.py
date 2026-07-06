@@ -174,6 +174,60 @@ class ComputeExceedanceTests(unittest.TestCase):
         self.assertTrue(np.allclose(probs.isel(time_window=0).values, 100.0))
         self.assertTrue(np.allclose(probs.isel(time_window=-1).values, 0.0))
 
+    def test_below_direction_all_under_threshold_gives_100_percent(self):
+        thr_path = self._make_thr(5.0)
+        probs = compute_exceedance(
+            self._make_field(1.0), thr_path, self.init_date, window=7, var="pr", direction="below"
+        )
+        self.assertTrue(np.allclose(probs.values, 100.0))
+
+    def test_below_direction_none_under_threshold_gives_0_percent(self):
+        thr_path = self._make_thr(5.0)
+        probs = compute_exceedance(
+            self._make_field(10.0), thr_path, self.init_date, window=7, var="pr", direction="below"
+        )
+        self.assertTrue(np.allclose(probs.values, 0.0))
+
+    def test_all_aggregate_requires_every_day_in_window(self):
+        """With aggregate='all', a single day back above threshold breaks an otherwise-dry window."""
+        thr_path = self._make_thr(5.0)
+        data = np.full((self.n_lead, self.n_ens, len(self.lat), len(self.lon)), 1.0)  # every day dry
+        data[3, :, :, :] = 10.0  # day 3 is not dry, breaks any window containing it
+        probs = compute_exceedance(
+            self._make_field(data), thr_path, self.init_date, window=7, var="pr",
+            direction="below", aggregate="all",
+        )
+        # First window (days 0-6) contains day 3 -> not all dry -> 0%.
+        self.assertTrue(np.allclose(probs.isel(time_window=0).values, 0.0))
+        # Last window (days 7-13) excludes day 3 -> all dry -> 100%.
+        self.assertTrue(np.allclose(probs.isel(time_window=-1).values, 100.0))
+
+    def test_any_aggregate_vs_all_aggregate_differ(self):
+        """A single dry day should trigger aggregate='any' but not aggregate='all'."""
+        thr_path = self._make_thr(5.0)
+        data = np.full((self.n_lead, self.n_ens, len(self.lat), len(self.lon)), 10.0)  # not dry
+        data[0, :, :, :] = 1.0  # only day 0 is dry
+        any_probs = compute_exceedance(
+            self._make_field(data), thr_path, self.init_date, window=7, var="pr",
+            direction="below", aggregate="any",
+        )
+        all_probs = compute_exceedance(
+            self._make_field(data), thr_path, self.init_date, window=7, var="pr",
+            direction="below", aggregate="all",
+        )
+        self.assertTrue(np.allclose(any_probs.isel(time_window=0).values, 100.0))
+        self.assertTrue(np.allclose(all_probs.isel(time_window=0).values, 0.0))
+
+    def test_invalid_direction_raises_value_error(self):
+        thr_path = self._make_thr(1.0)
+        with self.assertRaises(ValueError):
+            compute_exceedance(self._make_field(10.0), thr_path, self.init_date, window=7, var="pr", direction="sideways")
+
+    def test_invalid_aggregate_raises_value_error(self):
+        thr_path = self._make_thr(1.0)
+        with self.assertRaises(ValueError):
+            compute_exceedance(self._make_field(10.0), thr_path, self.init_date, window=7, var="pr", aggregate="most")
+
     def test_regional_subset_reduces_domain(self):
         """lon_slice and lat_slice restrict the output spatial domain."""
         thr_path = self._make_thr(1.0)

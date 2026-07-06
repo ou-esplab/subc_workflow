@@ -96,14 +96,16 @@ Design intent:
 - Compute exceedance probabilities from rolling windows along lead time.
 - Require summary outputs to remain strict 2D lat/lon maps for plotting.
 - Skip plotting when outputs are not map-like instead of collapsing dimensions implicitly.
-- Produce a single pooled multi-model-ensemble (MME) exceedance map per region/week — not per-model maps. Pooling combines every configured model's raw exceedance-member counts and ensemble sizes (sum counts across models, sum member counts across models, then divide once), which is methodologically distinct from averaging independently-computed per-model probabilities.
+- Produce a single pooled multi-model-ensemble (MME) exceedance map per product/region/week — not per-model maps. Pooling combines every configured model's raw exceedance-member counts and ensemble sizes (sum counts across models, sum member counts across models, then divide once), which is methodologically distinct from averaging independently-computed per-model probabilities.
+- `exceedance` in `config.yaml` is a list of independent product configs (currently 3: precip above-95th, tas above-95th, precip below-5th), each with its own `var`/`lev`/`percentile`/`direction`/`aggregate`. `compute_exceedance()` in `utils/exceedance_utils.py` takes `direction` (`above`/`below`, which comparison operator) and `aggregate` (`any`/`all`, whether one or every day in the rolling window must cross) so the same function serves all product types.
+- Output filenames are tagged with `p{percentile}_{direction}` so multiple products for the same variable never collide.
 - Fix the seam artifact in Global (Robinson-projection) exceedance maps by closing the 0–359° longitude grid with `cartopy.util.add_cyclic_point` before contouring.
 
 Threshold selection behavior:
 
 - Prefer exact MMDD threshold files.
 - Allow nearest-MMDD fallback only within `exceedance.max_fallback_days`.
-- Skip a model entirely when no threshold falls within that bound (it simply doesn't contribute to the pooled MME for that date).
+- Skip a model entirely when no threshold falls within that bound (it simply doesn't contribute to the pooled MME for that product/date).
 
 ---
 

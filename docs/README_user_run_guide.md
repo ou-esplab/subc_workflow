@@ -176,7 +176,7 @@ For shadow-only ingest tests, set `ingest.primary_enabled: false`.
 
 - Validates realtime inputs.
 - Builds weekly anomaly outputs.
-- Computes a single pooled multi-model-ensemble (MME) exceedance product per region/week (precipitation, 95th percentile by default) — not a per-model breakdown.
+- Computes a single pooled multi-model-ensemble (MME) exceedance map per product/region/week — not a per-model breakdown. 3 products are configured by default: precip heavy-rain (above 95th percentile), temp extreme-heat (above 95th percentile), and precip drought (below 5th percentile, every day in the window).
 - Writes manifests and summary plots.
 
 ### `pycpt`
@@ -230,16 +230,34 @@ Important behavior:
 - Exact MMDD matches are preferred.
 - Nearest-MMDD fallback is allowed only within `+/- 7` days by default.
 - If no threshold file is within that range, the model is skipped.
-- Exceedance is computed once per configured region/week by pooling every model that has a valid threshold for that date (summing raw exceedance-member counts and ensemble sizes across models, then dividing once) into a single `SUBC-MME` output — there are no per-model exceedance files to go stale.
+- `exceedance` in `config.yaml` is a **list** of product configs, not a single mapping. Each entry is computed independently: pooling every model that has a valid threshold for that date/product (summing raw exceedance-member counts and ensemble sizes across models, then dividing once) into a single `SUBC-MME` output per product — there are no per-model exceedance files to go stale.
+- Each product config adds `direction` (`above`/`below`) and `aggregate` (`any`/`all`) to select which tail of the distribution and whether a week is flagged by at least one day crossing the threshold or every day crossing it (the latter is used for the drought/dry-spell product, since a low precip percentile threshold is often near zero and "any day" would trigger almost every week).
+- Output filenames are tagged with `p{percentile}_{direction}` (e.g. `p95_above`, `p5_below`) so multiple products for the same variable never collide.
 
-Example:
+Example (3 products currently configured — precip heavy-rain, temp extreme-heat, precip drought):
 
 ```yaml
 exceedance:
-  var: pr
-  lev: sfc
-  percentile: 95
-  window_days: 7
+  - var: pr
+    lev: sfc
+    percentile: 95
+    direction: above
+    aggregate: any
+    window_days: 7
+    max_fallback_days: 7
+  - var: tas
+    lev: 2m
+    percentile: 95
+    direction: above
+    aggregate: any
+    window_days: 7
+    max_fallback_days: 7
+  - var: pr
+    lev: sfc
+    percentile: 5
+    direction: below
+    aggregate: all
+    window_days: 7
   max_fallback_days: 7
 ```
 

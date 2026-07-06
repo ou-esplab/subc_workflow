@@ -19,13 +19,13 @@ This document describes every file produced by the subc_workflow pipeline, organ
             {PREFIX}{DOMAIN}Week{1-4}.nc            ← products (regional)
             {PREFIX}{DOMAIN}Weeks34.nc              ← products (regional agg)
             fcst_{FCSTDATE}.anom.pr_sfc.{stat}.nc  ← products (legacy)
-            exceed_SUBC-MME_{VAR}_{REGION}_{FCSTDATE}_wk{W}.nc  ← products (pooled multi-model exceedance)
+            exceed_SUBC-MME_{VAR}_{TAG}_{REGION}_{FCSTDATE}_wk{W}.nc  ← products (pooled multi-model exceedance)
             manifest.json                          ← products
         images/
             {PREFIX}{DOMAIN}Week{1-4}.png          ← products (panel plots)
             {PREFIX}{DOMAIN}Weeks34.png
             {REGION}/
-                exceed_mme_{VAR}_{REGION}_{FCSTDATE}_wk{W}.png
+                exceed_mme_{VAR}_{TAG}_{REGION}_{FCSTDATE}_wk{W}.png
     pycpt/                                         ← pycpt_case_root
         {FCSTDATE}/pycpt/{REGION}/
             data/   ← case NetCDFs
@@ -90,7 +90,7 @@ The main product generation stage. Produces all scientific data files and visual
 | `fcst_{FCSTDATE}.anom.pr_sfc.emin.nc` | NetCDF4 | Legacy: precipitation anomaly ensemble minimum across models. |
 | `fcst_{FCSTDATE}.anom.pr_sfc.emean.nc` | NetCDF4 | Legacy: precipitation anomaly ensemble mean across models. |
 | `fcst_{FCSTDATE}.anom.pr_sfc.emax.nc` | NetCDF4 | Legacy: precipitation anomaly ensemble maximum across models. |
-| `exceed_SUBC-MME_{VAR}_{REGION}_{FCSTDATE}_wk{W}.nc` | NetCDF4 | Pooled multi-model-ensemble exceedance probability grid: every configured model's ensemble members are pooled together, then the fraction exceeding the configured percentile threshold (default: 95th) during forecast week W is computed for the given region. One file per region/week; no per-model exceedance files are produced. |
+| `exceed_SUBC-MME_{VAR}_{TAG}_{REGION}_{FCSTDATE}_wk{W}.nc` | NetCDF4 | Pooled multi-model-ensemble exceedance probability grid: every configured model's ensemble members are pooled together, then the fraction crossing the configured percentile threshold in the configured direction during forecast week W is computed for the given region. `{TAG}` is `p{percentile}_{direction}` (e.g. `p95_above`, `p5_below`) and disambiguates the 3 configured products (`exceedance:` is now a list in `config.yaml`, one entry per product: precip above-95th, tas above-95th, precip below-5th with an all-days-in-window aggregation for the drought signal). One file per product/region/week; no per-model exceedance files are produced. |
 | `manifest.json` | JSON | Run metadata: forecast date, models used, variables, weeks, regions processed, file counts, creation timestamp. |
 
 **Variable prefixes used in regional filenames:**
@@ -114,7 +114,7 @@ All images are PNG at 150 dpi.
 |---|---|
 | `{PREFIX}{DOMAIN}Week{1–4}.png` | Multi-model panel plot of weekly anomalies for the given variable and domain. Each panel shows one model; final panel shows the SUBC-MME. |
 | `{PREFIX}{DOMAIN}Weeks34.png` | Same layout, weeks 3–4 aggregated. |
-| `{REGION}/exceed_mme_{VAR}_{REGION}_{FCSTDATE}_wk{W}.png` | Single pooled multi-model-ensemble exceedance probability map for the given variable, region, and week. Stored in a per-region subdirectory. |
+| `{REGION}/exceed_mme_{VAR}_{TAG}_{REGION}_{FCSTDATE}_wk{W}.png` | Single pooled multi-model-ensemble exceedance probability map for the given variable/product/region/week. Stored in a per-region subdirectory. |
 
 ---
 
@@ -218,6 +218,5 @@ The following `config.yaml` keys control output paths:
 | `arraylake.repo` | `ou-subc/subc-forecasts` | ArrayLake repository |
 | `arraylake.variables` | `[pr, tas, rlut, ts, ua, va, zg]` | Variables synced to ArrayLake |
 | `arraylake.skip_models` | `[NCEP-CFSv2, GMAO-GEOS_V3]` | Models excluded from ArrayLake |
-| `exceedance.percentile` | `95` | Threshold for exceedance probability files |
-| `exceedance.window_days` | `7` | Rolling window length (days) for the exceedance calculation |
+| `exceedance` | list of 3 product configs | Each entry: `var`, `lev`, `percentile`, `direction` (`above`/`below`), `aggregate` (`any`/`all`), `window_days`, `max_fallback_days` |
 | `pycpt_regions` | `[Venezuela, Iran, Mexico]` | Regions processed by PyCPT stage |

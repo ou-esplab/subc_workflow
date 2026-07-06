@@ -1382,6 +1382,8 @@
      <option value="2mTemp">2m Temperature</option>
      <option value="Precip">Precipitation</option>
      <option value="PrecipExceedance">Precip Exceedance (&ge;95th pctile)</option>
+     <option value="TempExceedance">Temp Exceedance (&ge;95th pctile)</option>
+     <option value="PrecipDrought">Precip Drought (&le;5th pctile, all week)</option>
      <option value="500hPaGeopotentialHeightNorthernHemisphere">500 hPa Geopotential Height</option>
     </select>
    </div>
@@ -1411,6 +1413,8 @@
     "2mTemp": ["Global", "NorthAmerica", "Iran", "Mexico", "Venezuela"],
     "Precip": ["Global", "NorthAmerica", "Iran", "Mexico", "Venezuela"],
     "PrecipExceedance": ["Global", "NorthAmerica", "CAsia", "Iran", "Mexico", "Venezuela"],
+    "TempExceedance": ["Global", "NorthAmerica", "CAsia", "Iran", "Mexico", "Venezuela"],
+    "PrecipDrought": ["Global", "NorthAmerica", "CAsia", "Iran", "Mexico", "Venezuela"],
     "500hPaGeopotentialHeightNorthernHemisphere": ["NorthernHemisphere"]
   };
 
@@ -1424,13 +1428,25 @@
     "NorthernHemisphere": "Northern Hemisphere"
   };
 
+  var exceedanceWeekLeads = [
+    {value: "wk1", text: "Week 1"},
+    {value: "wk2", text: "Week 2"},
+    {value: "wk3", text: "Week 3"},
+    {value: "wk4", text: "Week 4"}
+  ];
+
+  // Maps each exceedance dropdown value to the short variable code and the
+  // {var}_p{percentile}_{direction} filename tag used by products/forecast.py.
+  var exceedanceProductTags = {
+    "PrecipExceedance": {var: "pr",  tag: "p95_above"},
+    "TempExceedance":   {var: "tas", tag: "p95_above"},
+    "PrecipDrought":    {var: "pr",  tag: "p5_below"}
+  };
+
   var leadsByVar = {
-    "PrecipExceedance": [
-      {value: "wk1", text: "Week 1"},
-      {value: "wk2", text: "Week 2"},
-      {value: "wk3", text: "Week 3"},
-      {value: "wk4", text: "Week 4"}
-    ],
+    "PrecipExceedance": exceedanceWeekLeads,
+    "TempExceedance": exceedanceWeekLeads,
+    "PrecipDrought": exceedanceWeekLeads,
     "default": [
       {value: "Weeks34", text: "Weeks 3&4"},
       {value: "Week1",   text: "Week 1"},
@@ -1476,7 +1492,7 @@
     var lead = document.getElementById("fcstselectlead").value;
     var text;
 
-    if (varVal === "PrecipExceedance") {
+    if (exceedanceProductTags.hasOwnProperty(varVal)) {
       // Exceedance files live in a per-region subdirectory with the date in the filename.
       // "Latest" symlink dir uses the actual init date in filenames, so resolve to the
       // most recent actual date when Latest is selected.
@@ -1488,7 +1504,8 @@
         }
       }
       // lead is already in wk1..wk4 form for exceedance
-      text = 'images/' + date + '/' + region + '/exceed_mme_pr_' + region + '_' + date + '_' + lead + '.png';
+      var product = exceedanceProductTags[varVal];
+      text = 'images/' + date + '/' + region + '/exceed_mme_' + product.var + '_' + product.tag + '_' + region + '_' + date + '_' + lead + '.png';
     } else {
       var name = varVal;
       if (varVal !== "500hPaGeopotentialHeightNorthernHemisphere") {

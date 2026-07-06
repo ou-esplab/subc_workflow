@@ -31,17 +31,37 @@ Products are available for:
 
 **Format:** Multi-panel PNG (one panel per model plus MME), plus a companion NetCDF with per-model and MME arrays.
 
-### 2. Exceedance Probability Map (pooled multi-model ensemble)
+### 2. Exceedance Probability Maps (pooled multi-model ensemble)
 
-**What it shows:** The probability that precipitation exceeds its climatological 95th percentile on at least one day during the forecast week, for a given region.
+Three exceedance products are computed, each a single map per region/week (not a per-model panel grid). All three use the same **combination method**: rather than averaging each model's independently-computed probability, every model's individual ensemble members are pooled into one large combined ensemble before the exceedance fraction is computed once. This is a **different combination method** than the Anomaly Map's MME (which averages each model's own mean). A model contributing more ensemble members (e.g. ECCC-GEPS8's 21 vs. GMAO's 4) therefore has proportionally more influence on the pooled result — this is a deliberate design choice, not an oversight.
 
-**How to read it:** A single map — not a per-model panel grid. Values are percentages: e.g. 40% at a grid point means 40% of the *pooled* ensemble members from all available models had at least one day that week exceeding that location's 95th-percentile threshold.
+**Format (all three):** Single-panel PNG per region/week; companion NetCDF with the pooled probability grid. Global maps use a Robinson projection.
 
-This uses a **different combination method** than the Anomaly Map's MME. Rather than averaging each model's independently-computed probability, every model's individual ensemble members are pooled into one large combined ensemble before the exceedance fraction is computed once. A model contributing more ensemble members (e.g. ECCC-GEPS8's 21 vs. GMAO's 4) therefore has proportionally more influence on the pooled result — this is a deliberate design choice, not an oversight.
+#### 2a. Precip Exceedance (heavy rain)
 
-**Available for:** Precipitation only (currently), 95th percentile, per region, Weeks 1–4. (The variable/percentile are configurable via `exceedance.var`/`exceedance.percentile` in `config.yaml`; the site currently ships precipitation/95th percentile only.)
+**What it shows:** The probability that precipitation exceeds its climatological 95th percentile on **at least one day** during the forecast week, for a given region.
 
-**Format:** Single-panel PNG per region/week; companion NetCDF with the pooled probability grid. Global maps use a Robinson projection.
+**How to read it:** Values are percentages: e.g. 40% at a grid point means 40% of the pooled ensemble members had at least one day that week exceeding that location's 95th-percentile threshold.
+
+**Available for:** Precipitation, 95th percentile, per region, Weeks 1–4.
+
+#### 2b. Temp Exceedance (extreme heat)
+
+**What it shows:** The probability that 2m temperature (`tas`) exceeds its climatological 95th percentile on **at least one day** during the forecast week, for a given region — the extreme-heat analog of the precip product above.
+
+**How to read it:** Same interpretation as the precip exceedance map, applied to temperature instead of precipitation.
+
+**Available for:** 2m temperature, 95th percentile, per region, Weeks 1–4.
+
+#### 2c. Precip Drought (dry spell)
+
+**What it shows:** The probability that precipitation stays below its climatological 5th percentile on **every day** during the forecast week, for a given region — a sustained dry-spell signal.
+
+**How to read it:** This product uses a different aggregation than the two above: low-percentile precipitation thresholds are often close to zero, so "at least one dry day" would trigger almost every week and wouldn't be a meaningful signal. Requiring **every day in the week** to fall below the threshold is closer to a meteorological drought/dry-spell definition.
+
+**Available for:** Precipitation, 5th percentile, per region, Weeks 1–4.
+
+> Variable/percentile/direction/aggregation for all three products are configurable via the `exceedance:` list in `config.yaml` (one entry per product).
 
 > **Note on PyCPT:** This workflow includes an optional CPT-based bias-correction stage (`pycpt`), but it is disabled by default in the production cron schedule and is not part of the standard set of products served on this site. If enabled for specific regions in the future, bias-corrected products would be documented separately here.
 
@@ -85,7 +105,7 @@ Under `forecast/{FCSTDATE}/data/`:
 | `subx_mme_anoms_wk_1-4_{FCSTDATE}.nc` | Main output: per-model and SUBC-MME weekly anomalies, weeks 1–4, all variables |
 | `{Prefix}{Region}Week{1-4}.nc` | Regional weekly anomaly data for one variable/region/week |
 | `{Prefix}{Region}Weeks34.nc` | Weeks 3–4 aggregate for one variable/region |
-| `exceed_SUBC-MME_{var}_{Region}_{FCSTDATE}_wk{W}.nc` | Pooled MME exceedance probability grid for one variable/region/week |
+| `exceed_SUBC-MME_{var}_{Tag}_{Region}_{FCSTDATE}_wk{W}.nc` | Pooled MME exceedance probability grid for one product/region/week |
 | `manifest.json` | Run metadata: models used, variables, weeks, regions, timestamp |
 
 ### Image Files
@@ -95,13 +115,14 @@ Under `forecast/{FCSTDATE}/images/`, all PNG at 150 dpi:
 | Product | Filename pattern |
 |---|---|
 | Anomaly panel maps | `{Prefix}{Region}Week{1-4}.png`, `{Prefix}{Region}Weeks34.png` |
-| Exceedance probability map | `{Region}/exceed_mme_{var}_{Region}_{FCSTDATE}_wk{W}.png` |
+| Exceedance probability maps | `{Region}/exceed_mme_{var}_{Tag}_{Region}_{FCSTDATE}_wk{W}.png` |
 
 **Placeholder legend:**
 - `{FCSTDATE}` — initialization Thursday, `YYYYMMDD`
 - `{Prefix}` — variable label: `2mTemp`, `Precip`, `500hPaGeopotentialHeight`, `SfcTemp`, `LongwaveAtToa`, `MSLP`
 - `{Region}` — `Global`, `NorthAmerica`, `Venezuela`, `Iran`, `Mexico`, `CAsia`
 - `{var}` — short variable code: `pr`, `tas`, `zg`, etc.
+- `{Tag}` — exceedance product tag, `p{percentile}_{direction}`: `p95_above` (precip/temp exceedance), `p5_below` (precip drought)
 - `{W}` — week number, 1–4
 
 ---
@@ -126,9 +147,9 @@ These are precomputed, hindcast-derived datasets reused across every weekly fore
 
 **Filename:** `{var}_{group}-{model}_{MMDD}.{pct}p.nc`
 **Location:** `{hc_root}/{var}{lev}/daily/percentiles/{model}-{group}/{var}_{model}-{group}/`
-**Contents:** Per-model, per-calendar-day percentile threshold fields (95th percentile by default).
+**Contents:** Per-model, per-calendar-day percentile threshold fields. Both the 95th percentile (precip/temp exceedance) and 5th percentile (precip drought) are generated, per the `exceedance:` list in `config.yaml`.
 
-**What it is:** For each model and calendar day, the value exceeded only 5% of the time in that model's own hindcast record, generated by [static/make_subx_percentiles.py](../static/make_subx_percentiles.py), which pools ensemble members from a window of days (default ±15 days) around each calendar day to build a large-enough sample for stable percentile estimates.
+**What it is:** For each model and calendar day, the value at the configured percentile (e.g. exceeded only 5% of the time, for a 95th-percentile file) in that model's own hindcast record, generated by [static/make_subx_percentiles.py](../static/make_subx_percentiles.py), which pools ensemble members from a window of days (default ±15 days) around each calendar day to build a large-enough sample for stable percentile estimates.
 
 **How it is used:** The exceedance product compares each forecast ensemble member against this per-model threshold; models are then pooled together (summed exceedance counts / summed ensemble sizes) into the single MME exceedance map.
 

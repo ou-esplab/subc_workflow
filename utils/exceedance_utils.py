@@ -105,10 +105,21 @@ def compute_exceedance(
     lon_slice: Optional[Tuple[float, float]] = None,
     lat_slice: Optional[Tuple[float, float]] = None,
     return_counts: bool = False,
+    direction: str = 'above',
+    aggregate: str = 'any',
 ) -> xr.DataArray:
     """
-    Probability (or counts) that within each rolling window along 'lead' at least one day
-    exceeds the percentile threshold.
+    Probability (or counts) that within each rolling window along 'lead', the forecast
+    crosses the percentile threshold in the given direction/aggregation:
+
+      - direction='above' (default): forecast > threshold (e.g. extreme heat/heavy rain).
+      - direction='below': forecast < threshold (e.g. drought/dry-spell, cold snap).
+      - aggregate='any' (default): flagged if AT LEAST ONE day in the window crosses
+        (appropriate for a single extreme-event signal).
+      - aggregate='all': flagged only if EVERY day in the window crosses (appropriate for
+        a sustained condition, e.g. a multi-day dry spell -- with 'any', a low-percentile
+        threshold near zero would trigger on almost any single dry day and not be a
+        meaningful drought signal).
 
     Restores the original vectorized approach:
       1) Subset forecast to region.
@@ -124,6 +135,10 @@ def compute_exceedance(
     - Avoids label-based selection on 'lead' entirely.
     - Scrubs attrs on intermediates to prevent NetCDF attr dtype issues later.
     """
+    if direction not in ('above', 'below'):
+        raise ValueError(f"compute_exceedance: direction must be 'above' or 'below', got {direction!r}")
+    if aggregate not in ('any', 'all'):
+        raise ValueError(f"compute_exceedance: aggregate must be 'any' or 'all', got {aggregate!r}")
     # --------- 0) Defensive checks / copy ----------
     field = ds_field.copy()
     field = field.assign_attrs({})  # scrub attrs to avoid netCDF attr issues
@@ -252,8 +267,10 @@ def compute_exceedance(
     rolled_fcst   = field.rolling(lead=window).construct("window_dim")
     rolled_thresh = thr_var.rolling(lead=window).construct("window_dim")
 
-    # Compare within window: any day exceeds threshold → True for that window end
-    exceed_bool = (rolled_fcst > rolled_thresh).any(dim="window_dim")
+    # Compare within window: does the window cross the threshold in the
+    # requested direction, aggregated per the requested mode (any/all day)?
+    crosses = (rolled_fcst > rolled_thresh) if direction == 'above' else (rolled_fcst < rolled_thresh)
+    exceed_bool = crosses.any(dim="window_dim") if aggregate == 'any' else crosses.all(dim="window_dim")
 
     # Drop the first (window-1) incomplete windows
     exceed_bool = exceed_bool.isel(lead=slice(window - 1, None))

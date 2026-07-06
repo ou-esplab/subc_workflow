@@ -168,9 +168,30 @@ def compute_percentiles(
 
                 ds = xr.open_dataset(path)
 
-                # Select pressure level when var has a P dimension (e.g. zg)
+                # Select pressure level when var has a P dimension (e.g. zg) --
+                # do this before the all-NaN sample check below so the check
+                # inspects the actually-requested level, not an arbitrary one.
                 if _is_pressure_level(lev) and "P" in ds.dims:
                     ds = ds.sel(P=int(lev))
+
+                # Cheap all-NaN placeholder check: some providers/models publish a
+                # full-size NaN-filled file for calendar dates outside their valid
+                # hindcast window (e.g. GEPS8 only has real data Jun 20-Dec 30).
+                # A coarse, globally-strided sample (rather than reading the whole
+                # ~40MB array via .values below) is enough to reliably detect this
+                # while avoiding the wasted I/O of a full read for placeholder dates.
+                sample = ds[var]
+                for dim, size in sample.sizes.items():
+                    if dim not in ("Y", "X") and size > 0:
+                        sample = sample.isel({dim: 0})
+                if "Y" in sample.dims and sample.sizes["Y"] > 1:
+                    sample = sample.isel(Y=slice(0, None, max(1, sample.sizes["Y"] // 10)))
+                if "X" in sample.dims and sample.sizes["X"] > 1:
+                    sample = sample.isel(X=slice(0, None, max(1, sample.sizes["X"] // 10)))
+                if bool(sample.isnull().all()):
+                    ds.close()
+                    n_missing += 1
+                    continue
 
                 ds = _to_rate(ds, var)    # convert accumulated pr to rate (e.g. EMC kg m-2 → kg m-2 s-1)
                 ds = _fold_s_into_m(ds)  # fold S>1 sub-daily inits into M (e.g. CFSv2 S=4)

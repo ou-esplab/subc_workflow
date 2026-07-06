@@ -682,6 +682,9 @@ def _plot_exceedance_mme_map(
     var: str,
     probs: xr.DataArray,
     pct: int = 95,
+    direction: str = "above",
+    aggregate: str = "any",
+    product_tag: str | None = None,
     week_num: int = 1,
     week_start: pd.Timestamp | None = None,
     week_end: pd.Timestamp | None = None,
@@ -703,10 +706,15 @@ def _plot_exceedance_mme_map(
 
     valid_str = f"{wk_start.strftime('%b %d')} – {wk_end.strftime('%b %d, %Y')}"
 
+    if product_tag is None:
+        product_tag = f"p{pct}_{direction}"
+
+    verb = "Exceeding" if direction == "above" else "Falling Below"
+    day_phrase = "At Least One Day" if aggregate == "any" else "Every Day"
     projection = ccrs.Robinson() if global_projection else ccrs.PlateCarree()
     fig, ax = plt.subplots(figsize=(9.4, 5.7), subplot_kw={"projection": projection})
     fig.suptitle(
-        f"Probability of Exceeding {pct}th Percentile Any Day During Week {week_num} ({valid_str})\n"
+        f"Probability of {verb} {pct}th Percentile on {day_phrase} During Week {week_num} ({valid_str})\n"
         f"{var} - {region_name} | MME Blend, {int(mme_member_count)} Ens",
         fontsize=13,
         y=0.98,
@@ -786,7 +794,7 @@ def _plot_exceedance_mme_map(
 
     region_dir = os.path.join(out_images, region_name)
     os.makedirs(region_dir, exist_ok=True)
-    out_png = os.path.join(region_dir, f"exceed_mme_{var}_{region_name}_{fcstdate}_wk{week_num}.png")
+    out_png = os.path.join(region_dir, f"exceed_mme_{var}_{product_tag}_{region_name}_{fcstdate}_wk{week_num}.png")
     fig.savefig(out_png, dpi=150)
     plt.close(fig)
     print(f"[SAVE] {out_png}")
@@ -1186,42 +1194,55 @@ def main():
     panel_models.append("SUBC-MME")
     _plot_legacy_weekly_products(ds_subx, out_images, out_data, fcstdate, panel_models, cfg)
 
-    # ---- Exceedance for all available models (pooled into a single MME map) ----
+    # ---- Exceedance for all available models (pooled into a single MME map per product) ----
     if args.skip_exceedance:
         print("[INFO] Skipping exceedance computation (--skip-exceedance)")
     elif ds_full_by_model:
         ds_full = safe_concat(ds_full_by_model, dim='model')
 
-        ex = cfg['exceedance']
-        var = ex['var']
-        pct = int(ex['percentile'])
-        win = int(ex['window_days'])
-        lev = ex.get('lev', 'sfc')
-        max_fallback_days = int(ex.get('max_fallback_days', 7))
+        available_models = [str(m) for m in ds_full['model'].values if str(m) != 'SUBC-MME']
 
-        if var in ds_full:
+        # Reverse map: local model_id -> server/configured model name
+        # Needed when model_name_map renames a model (e.g. GEOS_V2p1_5daily -> GEOS_V2p1)
+        # but threshold files use the original configured name.
+        server_name_by_local: dict[str, str] = {}
+        for m_cfg in cfg.get("models", []):
+            g, srv = m_cfg["group"], m_cfg["name"]
+            srv_key = f"{g}-{srv}"
+            local_name = model_map.get(srv_key, model_map.get(srv, srv))
+            local_key = f"{g}-{local_name}"
+            if local_key != srv_key:
+                server_name_by_local[local_key] = srv
+
+        exceedance_configs = cfg['exceedance']
+        if isinstance(exceedance_configs, dict):
+            exceedance_configs = [exceedance_configs]  # tolerate old single-mapping shape
+
+        for ex in exceedance_configs:
+            var = ex['var']
+            pct = int(ex['percentile'])
+            win = int(ex['window_days'])
+            lev = ex.get('lev', 'sfc')
+            max_fallback_days = int(ex.get('max_fallback_days', 7))
+            direction = ex.get('direction', 'above')
+            aggregate = ex.get('aggregate', 'any')
+            # Uniquely tags this product's output filenames so multiple products for
+            # the same var (e.g. pr above-95 vs pr below-5) never collide/overwrite.
+            product_tag = f"p{pct}_{direction}"
+
+            if var not in ds_full:
+                print(f"[WARN] Exceedance skipped for {product_tag} (variable '{var}' not present in model dataset).")
+                continue
+
             mmdd = pd.Timestamp(fcstdate).strftime('%m%d')
             processed_models = []
-            available_models = [str(m) for m in ds_full['model'].values if str(m) != 'SUBC-MME']
             mme_counts_by_region: dict[str, xr.DataArray] = {}
             mme_members_by_region: dict[str, int] = {}
             _debug_print(
-                "[INFO] Exceedance threshold lookup convention: "
+                f"[INFO] Exceedance threshold lookup convention ({product_tag}): "
                 f"<hc_root>/{var}{lev}/daily/percentiles/{{model}}-{{group}}/{var}_{{model}}-{{group}}/"
                 f"{var}_{{group}}-{{model}}-MMDD.{pct}p.nc"
             )
-
-            # Reverse map: local model_id -> server/configured model name
-            # Needed when model_name_map renames a model (e.g. GEOS_V2p1_5daily -> GEOS_V2p1)
-            # but threshold files use the original configured name.
-            server_name_by_local: dict[str, str] = {}
-            for m_cfg in cfg.get("models", []):
-                g, srv = m_cfg["group"], m_cfg["name"]
-                srv_key = f"{g}-{srv}"
-                local_name = model_map.get(srv_key, model_map.get(srv, srv))
-                local_key = f"{g}-{local_name}"
-                if local_key != srv_key:
-                    server_name_by_local[local_key] = srv
 
             for mid in available_models:
                 if '-' not in mid:
@@ -1263,12 +1284,12 @@ def main():
                     candidate_pattern = os.path.join(thr_dir, f"{var}_{group}-{model_candidates_thr[-1]}_*.{pct}p.nc")
                     has_candidates = bool(glob.glob(candidate_pattern))
                     if has_candidates:
-                        print(f"[WARN] No threshold within +/-{max_fallback_days} days for {mid}; skipping model.")
+                        print(f"[WARN] No threshold within +/-{max_fallback_days} days for {mid} ({product_tag}); skipping model.")
                     else:
-                        print(f"[WARN] Missing threshold files for {mid} under: {thr_dir}")
+                        print(f"[WARN] Missing threshold files for {mid} ({product_tag}) under: {thr_dir}")
                     continue
                 if f"_{mmdd}." not in os.path.basename(thr_path):
-                    _debug_print(f"[INFO] Using nearest threshold for {mid}: {os.path.basename(thr_path)}")
+                    _debug_print(f"[INFO] Using nearest threshold for {mid} ({product_tag}): {os.path.basename(thr_path)}")
 
                 for r in cfg.get('regions', []):
                     region_name = r['name']
@@ -1287,6 +1308,8 @@ def main():
                         lon_slice=lon_slice,
                         lat_slice=lat_slice,
                         return_counts=True,
+                        direction=direction,
+                        aggregate=aggregate,
                     )
                     ens_dim = 'M' if 'M' in field.dims else ('member' if 'member' in field.dims else None)
                     model_nens = int(field.sizes.get(ens_dim, 0)) if ens_dim else 1
@@ -1302,49 +1325,51 @@ def main():
                 processed_models.append(mid)
 
             if not processed_models:
-                print("[WARN] Exceedance skipped (no model-specific threshold files found).")
-            else:
-                week0 = pd.Timestamp(fcstdate) + pd.Timedelta(days=2)  # Saturday
-                for region_name, mme_counts in mme_counts_by_region.items():
-                    mme_nens = int(mme_members_by_region.get(region_name, 0))
-                    if mme_nens <= 0:
-                        continue
-                    mme_probs = (mme_counts / float(mme_nens)) * 100.0
-                    mme_probs.name = f"{var}_exceed_prob"
+                print(f"[WARN] Exceedance skipped for {product_tag} (no model-specific threshold files found).")
+                continue
 
-                    for week_num in [1, 2, 3, 4]:
-                        wk_start = week0 + pd.Timedelta(days=(week_num - 1) * 7)
-                        wk_end = wk_start + pd.Timedelta(days=6)
+            week0 = pd.Timestamp(fcstdate) + pd.Timedelta(days=2)  # Saturday
+            for region_name, mme_counts in mme_counts_by_region.items():
+                mme_nens = int(mme_members_by_region.get(region_name, 0))
+                if mme_nens <= 0:
+                    continue
+                mme_probs = (mme_counts / float(mme_nens)) * 100.0
+                mme_probs.name = f"{var}_exceed_prob"
 
-                        probs_week = _select_week_window_from_probs(
-                            mme_probs,
-                            wk_end,
-                            week_num,
-                            region_name,
-                        )
-                        if "time_window" in probs_week.coords and "time_window" not in probs_week.dims:
-                            probs_week = probs_week.drop_vars("time_window", errors="ignore")
-                        out_week_file = os.path.join(
-                            out_data,
-                            f"exceed_SUBC-MME_{var}_{region_name}_{fcstdate}_wk{week_num}.nc",
-                        )
-                        probs_week.to_netcdf(out_week_file)
+                for week_num in [1, 2, 3, 4]:
+                    wk_start = week0 + pd.Timedelta(days=(week_num - 1) * 7)
+                    wk_end = wk_start + pd.Timedelta(days=6)
 
-                        _plot_exceedance_mme_map(
-                            out_images=out_images,
-                            fcstdate=fcstdate,
-                            region_name=region_name,
-                            var=var,
-                            probs=mme_probs,
-                            pct=pct,
-                            week_num=week_num,
-                            week_start=wk_start,
-                            week_end=wk_end,
-                            global_projection=(region_name == "Global"),
-                            mme_member_count=mme_nens,
-                        )
-        else:
-            print(f"[WARN] Exceedance skipped (variable '{var}' not present in model dataset).")
+                    probs_week = _select_week_window_from_probs(
+                        mme_probs,
+                        wk_end,
+                        week_num,
+                        region_name,
+                    )
+                    if "time_window" in probs_week.coords and "time_window" not in probs_week.dims:
+                        probs_week = probs_week.drop_vars("time_window", errors="ignore")
+                    out_week_file = os.path.join(
+                        out_data,
+                        f"exceed_SUBC-MME_{var}_{product_tag}_{region_name}_{fcstdate}_wk{week_num}.nc",
+                    )
+                    probs_week.to_netcdf(out_week_file)
+
+                    _plot_exceedance_mme_map(
+                        out_images=out_images,
+                        fcstdate=fcstdate,
+                        region_name=region_name,
+                        var=var,
+                        probs=mme_probs,
+                        pct=pct,
+                        direction=direction,
+                        aggregate=aggregate,
+                        product_tag=product_tag,
+                        week_num=week_num,
+                        week_start=wk_start,
+                        week_end=wk_end,
+                        global_projection=(region_name == "Global"),
+                        mme_member_count=mme_nens,
+                    )
 
     # ---- Manifest ----
     manifest = {
