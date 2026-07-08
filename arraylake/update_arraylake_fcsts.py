@@ -417,6 +417,23 @@ for subx_model in models_to_process:
                         ds = xr.open_dataset(f, engine='netcdf4', chunks={})
                         # Select only the variable of interest from the dataset
                         ds = ds[[variable]]
+
+                        # For CFSv2 forecasts: expand malformed files with fewer than 4 start times
+                        if this_model == 'CFSv2' and datatype == 'forecast':
+                            if len(ds['S']) < 4:
+                                # Get the existing start time
+                                existing_s = ds['S'].values[0]
+        
+                                # Determine day and all 4 expected start times for that day
+                                day = pd.Timestamp(existing_s).normalize()
+                                expected_s = [day + pd.Timedelta(hours=h) for h in [0, 6, 12, 18]]
+        
+                                # Reindex to all 4 start times (NaN-pads missing ones)
+                                ds = ds.reindex(S=expected_s)
+        
+                        logger.debug(
+                        f"  CFSv2: Expanded malformed file {Path(f).name} "
+                        f"from {len(ds['S'].values)} to 4 start times (NaN-padded missing)")
                         
                         # Check if the first member, lead, and pressure slice has any non-NaN values
                         if 'P' in ds[variable].dims:
