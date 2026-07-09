@@ -852,14 +852,19 @@ def _download_gmao_to_subx(
 # CPC mirror (https://ftp.cpc.ncep.noaa.gov/dcollins/SubX/CFS/) organizes files
 # under one subdirectory per variable/level, e.g. pr_sfc/realtime/, zg_500/realtime/.
 # File pattern: {prefix}_CFS_{ddmonyyyy}_{HH}z_d00_d44_{member}.nc
-# CPC publishes 4 init cycles/day (00z/06z/12z/18z); only 00z is fetched here to
-# match the existing one-file-per-calendar-day SubX archive convention (S:1/day).
+# CPC publishes 4 init cycles/day (00z/06z/12z/18z), each with 4 members; all 4
+# cycles are fetched and stacked along S so the daily SubX archive file matches
+# the historical convention of S:4/day (one real per-cycle initialization each,
+# not just the 00z cycle).
 # Each file has exactly one data variable, whose in-file name is looked up
 # dynamically rather than hardcoded (GEFS/CFS use inconsistent internal names).
 
 _CFS_VAR_PREFIX: Dict[str, str] = {
     "pr":  "pr_sfc",
     "tas": "tas_2m",
+    "ua":  "ua_200",
+    "va":  "va_200",
+    "ts":  "ts",
 }
 
 _CFS_VAR_LEVELS: Dict[str, List[Tuple[int, str]]] = {
@@ -867,6 +872,7 @@ _CFS_VAR_LEVELS: Dict[str, List[Tuple[int, str]]] = {
 }
 
 _CFS_MEMBERS = ["m01", "m02", "m03", "m04"]
+_CFS_HOURS = ["00z", "06z", "12z", "18z"]
 
 
 def _list_cfs_dates(base_url: str, var: str) -> List[str]:
@@ -896,9 +902,10 @@ def _download_cfs_to_subx(
     init_date: str,
     out_file: Path,
 ) -> bool:
-    """Download all 4 CFS ensemble member files (00z cycle), merge into SubX format.
+    """Download all 4 CFS cycles (00z/06z/12z/18z), each with 4 ensemble members,
+    merge into SubX format.
 
-    Output dimensions: (S: 1, M: 4, [P: N,] L: 44, Y: 181, X: 360)
+    Output dimensions: (S: 4, M: 4, [P: N,] L: 44, Y: 181, X: 360)
     """
     import numpy as np
     import pandas as pd
@@ -914,11 +921,8 @@ def _download_cfs_to_subx(
     init_ts = pd.Timestamp(init_date)
     base = base_url.rstrip("/")
 
-    member_arrays: List = []
-    lead_days_ref: Optional[np.ndarray] = None
-
-    def _fetch_cfs(prefix: str, member: str, tmpdir: str) -> "xr.Dataset":
-        fname = f"{prefix}_CFS_{cfs_date}_00z_d00_d44_{member}.nc"
+    def _fetch_cfs(prefix: str, member: str, hour: str, tmpdir: str) -> "xr.Dataset":
+        fname = f"{prefix}_CFS_{cfs_date}_{hour}_d00_d44_{member}.nc"
         url = f"{base}/{prefix}/realtime/{fname}"
         tmp_file = Path(tmpdir) / fname
         print(f"[DIRECT][CFS] Downloading {url}")
@@ -932,44 +936,53 @@ def _download_cfs_to_subx(
     def _data_var(ds: "xr.Dataset") -> str:
         return list(ds.data_vars)[0]
 
+    hour_arrays: List = []
+
     with tempfile.TemporaryDirectory() as tmpdir:
-        for m_idx, member in enumerate(_CFS_MEMBERS, start=1):
+        for hour in _CFS_HOURS:
+            member_arrays: List = []
+            lead_days_ref: Optional[np.ndarray] = None
             try:
-                if is_multilevel:
-                    level_arrays: List = []
-                    for p_val, prefix in _CFS_VAR_LEVELS[var]:
-                        ds = _fetch_cfs(prefix, member, tmpdir)
+                for m_idx, member in enumerate(_CFS_MEMBERS, start=1):
+                    if is_multilevel:
+                        level_arrays: List = []
+                        for p_val, prefix in _CFS_VAR_LEVELS[var]:
+                            ds = _fetch_cfs(prefix, member, hour, tmpdir)
+                            if lead_days_ref is None:
+                                lead_days_ref = _lead_days_cfs(ds)
+                            da_lev = (
+                                ds[_data_var(ds)]
+                                .rename({"time": "L", "lat": "Y", "lon": "X"})
+                                .assign_coords(L=lead_days_ref)
+                            )
+                            da_lev["L"].attrs["units"] = "days"
+                            da_lev = da_lev.expand_dims(P=[p_val])
+                            level_arrays.append(da_lev)
+                            ds.close()
+                        da_member = xr.concat(level_arrays, dim="P").expand_dims(M=[m_idx])
+                    else:
+                        ds = _fetch_cfs(var_prefix, member, hour, tmpdir)
                         if lead_days_ref is None:
                             lead_days_ref = _lead_days_cfs(ds)
-                        da_lev = (
+                        da_member = (
                             ds[_data_var(ds)]
                             .rename({"time": "L", "lat": "Y", "lon": "X"})
                             .assign_coords(L=lead_days_ref)
                         )
-                        da_lev["L"].attrs["units"] = "days"
-                        da_lev = da_lev.expand_dims(P=[p_val])
-                        level_arrays.append(da_lev)
+                        da_member["L"].attrs["units"] = "days"
+                        da_member = da_member.expand_dims(M=[m_idx])
                         ds.close()
-                    da_member = xr.concat(level_arrays, dim="P").expand_dims(M=[m_idx])
-                else:
-                    ds = _fetch_cfs(var_prefix, member, tmpdir)
-                    if lead_days_ref is None:
-                        lead_days_ref = _lead_days_cfs(ds)
-                    da_member = (
-                        ds[_data_var(ds)]
-                        .rename({"time": "L", "lat": "Y", "lon": "X"})
-                        .assign_coords(L=lead_days_ref)
-                    )
-                    da_member["L"].attrs["units"] = "days"
-                    da_member = da_member.expand_dims(M=[m_idx])
-                    ds.close()
+                    member_arrays.append(da_member)
             except Exception as exc:
-                print(f"[DIRECT][CFS][WARN] Failed for member {member}: {exc}", file=sys.stderr)
+                print(f"[DIRECT][CFS][WARN] Failed for {hour} member {member}: {exc}", file=sys.stderr)
                 return False
-            member_arrays.append(da_member)
 
-        combined = xr.concat(member_arrays, dim="M")
-        combined = combined.expand_dims(S=[np.datetime64(init_ts, "ns")])
+            combined_hour = xr.concat(member_arrays, dim="M")
+            hour_offset = pd.Timedelta(hours=int(hour.rstrip("z")))
+            combined_hour = combined_hour.expand_dims(S=[np.datetime64(init_ts + hour_offset, "ns")])
+            hour_arrays.append(combined_hour)
+
+        combined = xr.concat(hour_arrays, dim="S")
         # Match the existing raw-ingest convention (P first when present).
         dim_order = ("P", "S", "M", "L", "Y", "X") if "P" in combined.dims else ("S", "M", "L", "Y", "X")
         combined = combined.transpose(*[d for d in dim_order if d in combined.dims])

@@ -12,7 +12,7 @@ models:
   - { group: EMC,  name: GEFSv12_CPC,      vars: [pr, tas, zg],                   levels: [sfc, 2m, 500] }
   - { group: ESRL, name: FIMr1p1,          vars: [pr, rlut, tas, ts, ua, va, zg], levels: [sfc, sfc, 2m, sfc, 200, 200, 500] }
   - { group: GMAO, name: GEOS_V2p1_5daily, vars: [pr, rlut, tas, ts, ua, va, zg], levels: [sfc, sfc, 2m, sfc, 200, 200, 500] }
-  - { group: NCEP, name: CFSv2,            vars: [tas, pr, zg],                   levels: [2m, sfc, 500] }
+  - { group: NCEP, name: CFSv2,            vars: [tas, pr, zg, ua, ts, va],       levels: [2m, sfc, 500, 200, sfc, 200] }
   - { group: RSMAS,name: CCSM4,            vars: [pr, rlut, tas, ts, ua, va, zg], levels: [sfc, sfc, 2m, sfc, 200, 200, 500] }
 
 model_name_map:
@@ -183,7 +183,7 @@ arraylake:
   input_root: /data/esplab/subc-backup
   batch_size: 1
   variables: [pr, tas, rlut, ts, ua, va, zg]
-  skip_models: [NCEP-CFSv2, GMAO-GEOS_V3]
+  skip_models: [GMAO-GEOS_V3]
   # Optional per-model variable overrides. If omitted, arraylake.variables is used.
   # Example:
   #   model_vars:
