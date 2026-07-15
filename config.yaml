@@ -110,7 +110,7 @@ exceedance:
     lev: sfc
     percentile: 5
     direction: below
-    aggregate: all
+    aggregate: any
     window_days: 7
     max_fallback_days: 7
 pycpt_regions:
