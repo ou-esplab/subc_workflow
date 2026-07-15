@@ -244,7 +244,11 @@ class DownloadScriptTests(unittest.TestCase):
 
 
     def test_geos_v3_stub_mode_writes_request_marker(self):
-        """GMAO GEOS_V3 ingest uses the standard IRIDL path with no special handling."""
+        """When no model_source override is configured, GEOS_V3 falls back to
+        source_default (iridl) like any other model -- this test exercises
+        that fallback in isolation. Production config.yaml now overrides
+        GMAO-GEOS_V3 to direct_gmao_v3 (see
+        test_update_script_routes_geos_v3_to_direct_gmao_v3 below)."""
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
             config_path = root / "config.yaml"
@@ -282,7 +286,11 @@ class DownloadScriptTests(unittest.TestCase):
             self.assertEqual(payload["source"], "iridl")
 
     def test_update_script_includes_geos_v3(self):
-        """update_subx_fcsts.sh picks up GEOS_V3 from the models list."""
+        """update_subx_fcsts.sh picks up GEOS_V3 from the models list. This
+        inline config sets model_source: {} explicitly (no override), so it
+        remains a valid test of the config-wiring-picks-up-whatever-models-
+        list-regardless-of-source path; production config.yaml overrides
+        GMAO-GEOS_V3 to direct_gmao_v3 (see the sibling test below)."""
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
             config_path = root / "config.yaml"
@@ -332,6 +340,62 @@ class DownloadScriptTests(unittest.TestCase):
             self.assertTrue(marker.exists(), f"Expected stub marker at {marker}")
             payload = json.loads(marker.read_text(encoding="utf-8"))
             self.assertEqual(payload["source"], "iridl")
+
+    def test_update_script_routes_geos_v3_to_direct_gmao_v3(self):
+        """With model_source overridden (as production config.yaml now is),
+        GEOS_V3 routes to direct_gmao_v3 -- proves the shell-to-Python
+        routing end-to-end, complementing the Python-level unit tests in
+        test_download_subx_direct.py."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            config_path = root / "config.yaml"
+            config_path.write_text(
+                "\n".join(
+                    [
+                        "paths:",
+                        f"  rt_root: {root / 'rt'}",
+                        "concurrency:",
+                        "  downloads: 1",
+                        "ingest:",
+                        "  source_default: iridl",
+                        "  primary_enabled: true",
+                        "  model_source:",
+                        "    GMAO-GEOS_V3: direct_gmao_v3",
+                        "models:",
+                        "  - group: GMAO",
+                        "    name: GEOS_V3",
+                        "    vars: [pr]",
+                        "    levels: [sfc]",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+
+            env = os.environ.copy()
+            env["SUBX_DOWNLOAD_STUB"] = "1"
+
+            subprocess.run(
+                [
+                    str(REPO_ROOT / "ingest" / "update_subx_fcsts.sh"),
+                    "20260305",
+                    str(config_path),
+                ],
+                check=True,
+                cwd=REPO_ROOT,
+                env=env,
+            )
+
+            marker = (
+                root
+                / "rt"
+                / "GMAO-GEOS_V3"
+                / "forecast"
+                / "pr"
+                / "pr_GMAO-GEOS_V3_20260305.download-request.json"
+            )
+            self.assertTrue(marker.exists(), f"Expected stub marker at {marker}")
+            payload = json.loads(marker.read_text(encoding="utf-8"))
+            self.assertEqual(payload["source"], "direct_gmao_v3")
 
 
 if __name__ == "__main__":

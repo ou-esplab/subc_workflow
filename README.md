@@ -56,6 +56,7 @@ Outputs and logs are written under `logs/YYYYMMDD_HHMMSS/subx/<init>/`.
 - 2026-07-03: Replaced ArrayLake's hold-back-whole-date gate with NaN-fill-on-append plus a backfill-check pass; fixed ECCC per-level pressure selection and P-dimension embedding.
 - 2026-07-05: Added a daily `ingest arraylake` cron entry (06:00 UTC) to keep ArrayLake near-real-time between weekly runs.
 - 2026-07-06: Redesigned exceedance to produce a single pooled MME map per region/week (removed per-model exceedance outputs); fixed a Global-map seam bug; version-controlled `publish/web/index.html` as the deploy source of truth.
+- 2026-07-14: Added real-time direct-download ingest for GMAO GEOS_V3 (`direct_gmao_v3`) — regrids the native 0.5-deg grid to the standard 1-deg SubX grid, discovers ensemble member count per date (5 normally, 15 on month-end dates), and renames GMAO's raw in-file diagnostic names (PRECTOTCORR/T2M/OLR/TS/U/V/H) to SubX var names. Runs alongside the existing GMAO-GEOS_V2p1_5daily; not yet in ArrayLake (`arraylake.skip_models`). Supersedes the 2026-06-02 attempt, which was reverted for being incomplete.
 
 ## Diagnostics
 

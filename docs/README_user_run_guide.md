@@ -139,14 +139,18 @@ Example source routing in `config.yaml`:
 ingest:
   source_default: iridl
   primary_enabled: true
-  model_source: {}
+  model_source:
+    ESRL-FIMr1p1: direct_esrl
+    GMAO-GEOS_V2p1_5daily: direct_gmao
+    GMAO-GEOS_V3: direct_gmao_v3
+    ECCC-GEPS8: direct_eccc
+    RSMAS-CCSM4: direct_rsmas
   shadow:
     enabled: true
     rt_root: /data/esplab/subc-backup-direct-shadow
     model_source:
       ESRL-FIMr1p1: direct_esrl
       GMAO-GEOS_V2p1_5daily: direct_gmao
-      GMAO-GEOS_V3: direct_gmao_v3
       ECCC-GEPS8: direct_eccc
       RSMAS-CCSM4: direct_rsmas
   direct:
@@ -164,11 +168,22 @@ ingest:
         url: ftp://decadal.rsmas.miami.edu/pub/CPC_DATA/CCSM4/forecast/priority1/
 ```
 
-Supported source values: `iridl`, `direct`, `direct_esrl`, `direct_gmao`, `direct_gmao_v3`, `direct_eccc`, `direct_rsmas`.
+Supported source values: `iridl`, `direct`, `direct_esrl`, `direct_gmao`, `direct_gmao_v3`, `direct_eccc`, `direct_rsmas`, `direct_cfs`, `direct_gefs`.
 
-With this configuration, ingest runs in shadow mode:
-- Primary runtime files remain in `paths.rt_root` and continue to feed downstream stages.
-- Direct-source files are downloaded to `ingest.shadow.rt_root` for side-by-side validation.
+With the top-level `model_source` populated as above, those models ingest
+directly from their provider endpoints into `paths.rt_root` and feed
+downstream stages immediately — this is the primary, live path
+(`GMAO-GEOS_V3` has been on `direct_gmao_v3` since 2026-07-14, alongside the
+still-active `GMAO-GEOS_V2p1_5daily`; V3 is expected to eventually replace
+V2, but both currently run in parallel).
+
+The optional `ingest.shadow` block is a separate, additional validation
+layer: with `shadow.enabled: true`, the listed models are *also* fetched via
+their direct source into `ingest.shadow.rt_root`, purely for side-by-side
+comparison against whatever `source_default`/`model_source` is already
+feeding `paths.rt_root` for those same models — useful when testing a new
+direct source before promoting it to primary, not required once a source is
+already live there.
 
 For shadow-only ingest tests, set `ingest.primary_enabled: false`.
 

@@ -68,6 +68,16 @@ def _parse_date_from_filename(path: str) -> str | None:
 
 def _preproc_rt_root(ds: xr.Dataset, var: str, lev: str) -> xr.Dataset:
     """Preprocess one rt_root hindcast file: collapse S, select P, mean over M, normalise L."""
+    # Cap lead time at 45 days from init, matching the SubX weekly-product
+    # convention every other model in this archive already falls within
+    # natively. Done here, before L gets renamed to a positional "time"
+    # index below, so it's a real day-offset comparison (matters for
+    # GEOS_V3, whose raw hindcast runs 60-92 days normally, and has a real
+    # but unwanted anomaly on a few 2003-02 dates extending 300+ days past
+    # init) rather than at download time, so the raw archive stays at full
+    # fidelity and this cap stays a one-line, easily revisited choice.
+    if "L" in ds.dims:
+        ds = ds.sel(L=slice(None, 45))
     # Collapse S dimension: drop if scalar, otherwise average (e.g. CFSv2 has S=5 sub-daily inits)
     if "S" in ds.dims:
         if ds.sizes["S"] == 1:

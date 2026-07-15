@@ -934,7 +934,12 @@ def main():
         model_candidates = _candidate_model_names(group, server_model, model_map)
         local_model = model_candidates[0]
 
-        varlist, levlist = m["vars"], m["levels"]
+        # product_vars/product_levels let a model ingest (archive) a wider variable
+        # set than its hindcast source can support for climo/percentiles -- e.g.
+        # GEOS_V3's hindcast portal only has pr/tas, so forecast products for it
+        # must stay restricted to those even though vars/levels (used by the
+        # ingest scripts) covers all 7 real-time variables for archiving.
+        varlist, levlist = m.get("product_vars", m["vars"]), m.get("product_levels", m["levels"])
 
         # Canonical model_id for coords/labels/outputs
         model_id_local = f"{group}-{local_model}"

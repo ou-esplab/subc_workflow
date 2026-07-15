@@ -848,6 +848,233 @@ def _download_gmao_to_subx(
 # ── end GMAO helpers ───────────────────────────────────────────────────────────
 
 
+# ── GMAO V3 (GEOS-S2S-3) -specific download helpers ───────────────────────────
+# Portal (https://portal.nccs.nasa.gov/datashare/gmao/geos-s2s-3/NRT/SubC/)
+# organizes files under one date subdirectory per init date, flat inside:
+# File pattern: {prefix}_GMAOGEOS_{YYYYMMDD}_{member}.nc4
+# Unlike V2: (1) plain YYYYMMDD, not ddmonyyyy, and no _00z_d01_d45_
+# lead-window token; (2) member tokens are ensNN, not mNN; (3) ensemble size
+# varies by init date -- 5 members (ens01-ens05) on regular dates, 15
+# (ens01-ens15, members 6-15 are ocean-perturbed) on the last init date of
+# each month -- confirmed live 2026-07-14, so members are discovered per
+# date rather than hardcoded like V2's fixed _GMAO_MEMBERS list; (4) unlike
+# V2's files (whose in-file data variable already matches the SubX var name,
+# e.g. pr_sfc_*.nc contains "pr"), V3's files carry GMAO's raw internal GEOS
+# diagnostic names -- confirmed live: pr_sfc->PRECTOTCORR, olr->OLR,
+# tas_2m->T2M, ts_sfc->TS, ua_*->U, va_*->V, zg_*->H (same convention as the
+# hindcast/retro portal's _VAR_RENAME in static/download_geos_v3_hindcast.py,
+# just a larger set since this covers ua/va/zg too) -- so every var needs an
+# explicit in-file rename, not just rlut/olr.
+
+_GMAO_V3_VAR_PREFIX: Dict[str, str] = {
+    "pr":   "pr_sfc",
+    "rlut": "olr",
+    "tas":  "tas_2m",
+    "ts":   "ts_sfc",
+}
+
+_GMAO_V3_VAR_LEVELS: Dict[str, List[Tuple[int, str]]] = {
+    "ua": [(200, "ua_200"), (850, "ua_850")],
+    "va": [(200, "va_200"), (850, "va_850")],
+    "zg": [(200, "zg_200"), (500, "zg_500")],
+}
+
+# SubX var -> actual in-file data variable name on the V3 portal.
+_GMAO_V3_INFILE_VARNAME: Dict[str, str] = {
+    "pr":   "PRECTOTCORR",
+    "rlut": "OLR",
+    "tas":  "T2M",
+    "ts":   "TS",
+    "ua":   "U",
+    "va":   "V",
+    "zg":   "H",
+}
+
+
+def _regrid_gmao_v3_to_1deg(ds: "xr.Dataset") -> "xr.Dataset":
+    """Subsample V3's native 720x361 0.5-deg (-180..180) grid to 360x181
+    1-deg (0..359), matching the SubX convention every other model already
+    uses. Same logic as static/download_geos_v3_hindcast.py's
+    _regrid_to_1deg (different portal, same native grid) -- confirmed live
+    2026-07-14 that the NRT files are natively 361x720, not already on the
+    181x360 grid V2's files use, so _snap_grid_coords (which only rounds to
+    the nearest *integer* degree) is wrong here: it would collapse distinct
+    0.5-deg-spaced points together instead of properly subsampling.
+
+    The native grid is an exact 2:1 superset of the target grid, so no
+    interpolation is needed. Longitude is snapped to the nearest 0.5 before
+    the 0-360 conversion to avoid floating-point noise at lon~=0 wrapping
+    that point to ~359.999 and shifting every subsequent sample by one index.
+    """
+    import numpy as np
+
+    lon_snapped = np.round(ds["lon"].values * 2.0) / 2.0
+    lon_0_360 = np.mod(lon_snapped, 360.0)
+    ds = ds.assign_coords(lon=lon_0_360).sortby("lon")
+    ds = ds.isel(lat=slice(0, None, 2), lon=slice(0, None, 2))
+
+    expected_lat = np.arange(-90, 91, 1, dtype=float)
+    expected_lon = np.arange(0, 360, 1, dtype=float)
+    if not (
+        np.allclose(ds["lat"].values, expected_lat)
+        and np.allclose(ds["lon"].values, expected_lon)
+    ):
+        raise RuntimeError(
+            f"GMAO V3 regrid did not produce the expected 181x360 grid "
+            f"(got lat={ds['lat'].values[:3]}..{ds['lat'].values[-3:]}, "
+            f"lon={ds['lon'].values[:3]}..{ds['lon'].values[-3:]})"
+        )
+    return ds
+
+
+def _list_gmao_v3_members(http_url: str, init_date: str) -> List[str]:
+    """Return sorted ensNN member tokens actually present for one V3 init date.
+
+    Member count varies (5 normally, 15 on month-end dates), so this lists
+    the date directory rather than assuming a fixed member list.
+    """
+    date_dir_url = f"{http_url.rstrip('/')}/{init_date}/"
+    try:
+        with urlopen(date_dir_url, timeout=30) as resp:
+            text = resp.read().decode("utf-8", errors="ignore")
+    except Exception as exc:
+        print(f"[DIRECT][GMAO_V3][WARN] Failed listing date dir {date_dir_url}: {exc}", file=sys.stderr)
+        return []
+
+    tokens = set(re.findall(r"_(ens\d+)\.nc4?(?:[\"'])", text, flags=re.IGNORECASE))
+    return sorted(tokens, key=lambda t: int(re.search(r"\d+", t).group()))
+
+
+def _list_gmao_v3_dates(http_url: str, var: str, valid_dates: Sequence[str]) -> List[str]:
+    """Return available init dates for a variable on the GMAO V3 portal, newest first."""
+    if var in _GMAO_V3_VAR_LEVELS:
+        sentinel_prefix = _GMAO_V3_VAR_LEVELS[var][0][1].lower()
+    else:
+        sentinel_prefix = _GMAO_V3_VAR_PREFIX.get(var, "").lower()
+    if not sentinel_prefix:
+        return []
+    entries = _http_list_gmao_v3(http_url, valid_dates)
+    dates: set = set()
+    for entry in entries:
+        name = entry.name.lower()
+        if not (name.startswith(sentinel_prefix + "_gmaogeos_") and name.endswith("_ens01.nc4")):
+            continue
+        for d in _extract_dates(entry.name):
+            dates.add(d)
+    return sorted(dates, reverse=True)
+
+
+def _download_gmao_v3_to_subx(
+    http_url: str,
+    ftp_email: str,
+    var: str,
+    init_date: str,
+    out_file: Path,
+) -> bool:
+    """Download all GMAO V3 ensemble member files for one init date, merge into SubX format.
+
+    Output dimensions: (S: 1, M: 5-or-15, [P: 2,] L: N, Y: 181, X: 360)
+    """
+    import numpy as np
+    import pandas as pd
+    import xarray as xr
+
+    is_multilevel = var in _GMAO_V3_VAR_LEVELS
+    var_prefix = _GMAO_V3_VAR_PREFIX.get(var)
+    if not is_multilevel and var_prefix is None:
+        print(f"[DIRECT][GMAO_V3] Variable '{var}' not available on GMAO V3 portal; skipping.")
+        return False
+
+    members = _list_gmao_v3_members(http_url, init_date)
+    if not members:
+        print(f"[DIRECT][GMAO_V3] No members found for {init_date}; skipping.")
+        return False
+
+    init_ts = pd.Timestamp(init_date)
+    base_url = f"{http_url.rstrip('/')}/{init_date}"
+
+    member_arrays: List = []
+    lead_days_ref: Optional[np.ndarray] = None
+
+    def _fetch_gmao_v3(prefix: str, member: str, tmpdir: str) -> "xr.Dataset":
+        fname = f"{prefix}_GMAOGEOS_{init_date}_{member}.nc4"
+        url = f"{base_url}/{fname}"
+        tmp_file = Path(tmpdir) / fname
+        print(f"[DIRECT][GMAO_V3] Downloading {url}")
+        _download_file(url, tmp_file, ftp_email)
+        ds = _regrid_gmao_v3_to_1deg(xr.open_dataset(tmp_file))
+        # V3's files carry GMAO's raw in-file diagnostic names (PRECTOTCORR,
+        # T2M, OLR, TS, U, V, H), not the SubX var name the way V2's files
+        # already do -- rename so downstream ds[var] works uniformly.
+        infile_name = _GMAO_V3_INFILE_VARNAME.get(var)
+        if infile_name and infile_name in ds.data_vars:
+            ds = ds.rename({infile_name: var})
+        return ds
+
+    def _lead_days_gmao_v3(ds: "xr.Dataset") -> "np.ndarray":
+        time_vals = pd.DatetimeIndex(ds["time"].values)
+        return np.array(
+            [(t - init_ts).total_seconds() / 86400.0 for t in time_vals],
+            dtype=np.float32,
+        )
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        for m_idx, member in enumerate(members, start=1):
+            try:
+                if is_multilevel:
+                    level_arrays: List = []
+                    for p_val, prefix in _GMAO_V3_VAR_LEVELS[var]:
+                        ds = _fetch_gmao_v3(prefix, member, tmpdir)
+                        if lead_days_ref is None:
+                            lead_days_ref = _lead_days_gmao_v3(ds)
+                        drop = [v for v in ds.data_vars if "bnds" in v.lower()]
+                        ds = ds.drop_vars(drop, errors="ignore")
+                        da_lev = (
+                            ds[var]
+                            .drop_vars(["lev", "lev_bnds"], errors="ignore")
+                            .rename({"time": "L", "lat": "Y", "lon": "X"})
+                            .assign_coords(L=lead_days_ref)
+                        )
+                        if "lev" in da_lev.dims:
+                            da_lev = da_lev.squeeze("lev", drop=True)
+                        da_lev["L"].attrs["units"] = "days"
+                        da_lev = da_lev.expand_dims(P=[p_val])
+                        level_arrays.append(da_lev)
+                        ds.close()
+                    da_member = xr.concat(level_arrays, dim="P").expand_dims(M=[m_idx])
+                else:
+                    ds = _fetch_gmao_v3(var_prefix, member, tmpdir)
+                    if lead_days_ref is None:
+                        lead_days_ref = _lead_days_gmao_v3(ds)
+                    drop = [v for v in ds.data_vars if "bnds" in v.lower()]
+                    ds = ds.drop_vars(drop, errors="ignore")
+                    da_member = (
+                        ds[var]
+                        .rename({"time": "L", "lat": "Y", "lon": "X"})
+                        .assign_coords(L=lead_days_ref)
+                    )
+                    da_member["L"].attrs["units"] = "days"
+                    da_member = da_member.expand_dims(M=[m_idx])
+                    ds.close()
+            except Exception as exc:
+                print(f"[DIRECT][GMAO_V3][WARN] Failed for member {member}: {exc}", file=sys.stderr)
+                return False
+            member_arrays.append(da_member)
+
+        combined = xr.concat(member_arrays, dim="M")
+        combined = combined.expand_dims(S=[np.datetime64(init_ts, "ns")])
+        ds_out = combined.to_dataset(name=var)
+
+        out_file.parent.mkdir(parents=True, exist_ok=True)
+        tmp = out_file.with_suffix(".tmp.nc")
+        ds_out.to_netcdf(tmp)
+        tmp.rename(out_file)
+
+    return True
+
+# ── end GMAO V3 helpers ────────────────────────────────────────────────────────
+
+
 # ── CFS-specific download helpers ─────────────────────────────────────────────
 # CPC mirror (https://ftp.cpc.ncep.noaa.gov/dcollins/SubX/CFS/) organizes files
 # under one subdirectory per variable/level, e.g. pr_sfc/realtime/, zg_500/realtime/.
@@ -936,14 +1163,22 @@ def _download_cfs_to_subx(
     def _data_var(ds: "xr.Dataset") -> str:
         return list(ds.data_vars)[0]
 
-    hour_arrays: List = []
+    # hour_slots holds (hour, combined_hour-or-None); None means every member for
+    # that cycle failed to download and must be NaN-padded in a second pass below
+    # once we know the correct shape from some other cycle that did succeed.
+    hour_slots: List[Tuple[str, Optional["xr.DataArray"]]] = []
 
     with tempfile.TemporaryDirectory() as tmpdir:
         for hour in _CFS_HOURS:
-            member_arrays: List = []
+            # member_slots[i] is None until member i+1 downloads successfully; a
+            # missing member (e.g. one 404 among the 4 hours x 4 members x N
+            # levels this fetch needs) no longer aborts the whole date -- it's
+            # NaN-padded from a sibling member's shape instead, so the other
+            # successfully-downloaded members/cycles aren't thrown away too.
+            member_slots: List[Optional["xr.DataArray"]] = [None] * len(_CFS_MEMBERS)
             lead_days_ref: Optional[np.ndarray] = None
-            try:
-                for m_idx, member in enumerate(_CFS_MEMBERS, start=1):
+            for m_idx, member in enumerate(_CFS_MEMBERS, start=1):
+                try:
                     if is_multilevel:
                         level_arrays: List = []
                         for p_val, prefix in _CFS_VAR_LEVELS[var]:
@@ -972,15 +1207,40 @@ def _download_cfs_to_subx(
                         da_member["L"].attrs["units"] = "days"
                         da_member = da_member.expand_dims(M=[m_idx])
                         ds.close()
-                    member_arrays.append(da_member)
-            except Exception as exc:
-                print(f"[DIRECT][CFS][WARN] Failed for {hour} member {member}: {exc}", file=sys.stderr)
-                return False
+                except Exception as exc:
+                    print(f"[DIRECT][CFS][WARN] Failed for {hour} member {member}: {exc}; NaN-padding this member", file=sys.stderr)
+                    continue
+                member_slots[m_idx - 1] = da_member
 
-            combined_hour = xr.concat(member_arrays, dim="M")
+            if all(m is None for m in member_slots):
+                print(f"[DIRECT][CFS][WARN] All members failed for {hour}; NaN-padding entire cycle", file=sys.stderr)
+                hour_slots.append((hour, None))
+                continue
+
+            template = next(m for m in member_slots if m is not None)
+            resolved_members = [
+                da if da is not None else xr.full_like(template, np.nan).assign_coords(M=[m_idx])
+                for m_idx, da in enumerate(member_slots, start=1)
+            ]
+            combined_hour = xr.concat(resolved_members, dim="M")
             hour_offset = pd.Timedelta(hours=int(hour.rstrip("z")))
             combined_hour = combined_hour.expand_dims(S=[np.datetime64(init_ts + hour_offset, "ns")])
-            hour_arrays.append(combined_hour)
+            hour_slots.append((hour, combined_hour))
+
+        if all(arr is None for _, arr in hour_slots):
+            print(f"[DIRECT][CFS][ERROR] All cycles failed for var={var} date={init_date}; nothing to write.", file=sys.stderr)
+            return False
+
+        hour_template = next(arr for _, arr in hour_slots if arr is not None)
+        hour_arrays: List = []
+        for hour, arr in hour_slots:
+            if arr is None:
+                hour_offset = pd.Timedelta(hours=int(hour.rstrip("z")))
+                nan_hour = xr.full_like(hour_template, np.nan)
+                nan_hour = nan_hour.assign_coords(S=[np.datetime64(init_ts + hour_offset, "ns")])
+                hour_arrays.append(nan_hour)
+            else:
+                hour_arrays.append(arr)
 
         combined = xr.concat(hour_arrays, dim="S")
         # Match the existing raw-ingest convention (P first when present).
@@ -1476,6 +1736,30 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 print(f"[DIRECT] Exists, skipping: {out_file}")
                 continue
             ok = _download_gmao_to_subx(provider_url, ftp_email, args.var, init_date, out_file)
+            if ok:
+                downloaded += 1
+        print(f"[DIRECT] Completed provider={provider} downloaded={downloaded}")
+        return 0
+
+    if provider == "gmao_v3":
+        available = _list_gmao_v3_dates(provider_url, args.var, date_window)
+        if not available:
+            print(f"[DIRECT][GMAO_V3] No files found for var={args.var} at {provider_url}")
+            return 0
+        date_window_set = set(date_window)
+        matching = [d for d in available if d in date_window_set]
+        if not matching:
+            print(
+                f"[DIRECT][GMAO_V3] No files in lookback window for var={args.var} "
+                f"(window={date_window[-1]}..{date_window[0]})"
+            )
+            return 0
+        for init_date in matching:
+            out_file = target_dir / f"{args.var}_{args.group}-{args.local_model}_{init_date}.daily.nc"
+            if out_file.exists():
+                print(f"[DIRECT] Exists, skipping: {out_file}")
+                continue
+            ok = _download_gmao_v3_to_subx(provider_url, ftp_email, args.var, init_date, out_file)
             if ok:
                 downloaded += 1
         print(f"[DIRECT] Completed provider={provider} downloaded={downloaded}")

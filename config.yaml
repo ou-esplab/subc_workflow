@@ -12,6 +12,15 @@ models:
   - { group: EMC,  name: GEFSv12_CPC,      vars: [pr, tas, zg],                   levels: [sfc, 2m, 500] }
   - { group: ESRL, name: FIMr1p1,          vars: [pr, rlut, tas, ts, ua, va, zg], levels: [sfc, sfc, 2m, sfc, 200, 200, 500] }
   - { group: GMAO, name: GEOS_V2p1_5daily, vars: [pr, rlut, tas, ts, ua, va, zg], levels: [sfc, sfc, 2m, sfc, 200, 200, 500] }
+  # vars/levels here cover the full real-time ingest (archiving) matrix -- GMAO's
+  # NRT portal provides all 7. But the GEOS_V3 *hindcast* archive only has pr/tas
+  # (see static/download_geos_v3_hindcast.py), so climo/percentiles -- and thus
+  # forecast products -- can only ever cover those 2. product_vars/product_levels
+  # override vars/levels for products/forecast.py's per-model loop; ingest scripts
+  # (ingest/update_subx_fcsts.sh) still read vars/levels directly, so archiving is
+  # unaffected.
+  - { group: GMAO, name: GEOS_V3,          vars: [pr, rlut, tas, ts, ua, va, zg], levels: [sfc, sfc, 2m, sfc, 200, 200, 500],
+      product_vars: [pr, tas], product_levels: [sfc, 2m] }
   - { group: NCEP, name: CFSv2,            vars: [tas, pr, zg, ua, ts, va],       levels: [2m, sfc, 500, 200, sfc, 200] }
   - { group: RSMAS,name: CCSM4,            vars: [pr, rlut, tas, ts, ua, va, zg], levels: [sfc, sfc, 2m, sfc, 200, 200, 500] }
 
@@ -25,12 +34,13 @@ ingest:
   primary_enabled: true
   # Optional per-model source overrides using GROUP-MODEL keys.
   # Keep empty while downstream remains on IRIDL.
-  # Supported values: iridl, direct, direct_esrl, direct_gmao, direct_eccc, direct_rsmas
+  # Supported values: iridl, direct, direct_esrl, direct_gmao, direct_gmao_v3, direct_eccc, direct_rsmas, direct_cfs, direct_gefs
   model_source:
     ECCC-GEPS8: direct_eccc
     NCEP-CFSv2: direct_cfs
     EMC-GEFSv12_CPC: direct_gefs
     GMAO-GEOS_V2p1_5daily: direct_gmao
+    GMAO-GEOS_V3: direct_gmao_v3
     RSMAS-CCSM4: direct_rsmas
     ESRL-FIMr1p1: direct_esrl
   # Optional shadow ingest that runs in parallel and writes to a separate root.

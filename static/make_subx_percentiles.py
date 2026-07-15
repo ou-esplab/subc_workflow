@@ -34,7 +34,9 @@ Usage
 from __future__ import annotations
 
 import argparse
+import multiprocessing as mp
 import os
+from concurrent.futures import ProcessPoolExecutor, as_completed
 from pathlib import Path
 
 import numpy as np
@@ -45,6 +47,17 @@ from tqdm import tqdm
 
 
 DEFAULT_YEARS = list(range(1999, 2021))
+DEFAULT_WORKERS = 8
+
+# Populated by compute_percentiles() before the process pool is forked, so
+# worker processes inherit it via copy-on-write instead of it being pickled
+# and sent through IPC (calendardates holds many GB of numpy arrays for
+# models like CFSv2 -- pickling that per-task would be far slower than the
+# percentile computation itself). Relies on the "fork" start method, which
+# is why the pool below is created with mp.get_context("fork") explicitly
+# rather than trusting the platform default (spawn on some platforms would
+# silently make each worker reload this module with an empty dict).
+_WORKER_STATE: dict = {}
 
 
 def _load_cfg(config_path: str) -> dict:
@@ -110,6 +123,88 @@ def _circular_day_distance(d1: int, d2: int) -> int:
     return min(diff, 366 - diff)
 
 
+def _compute_and_write_one_mmdd(target_mmdd: str) -> str:
+    """Worker: pool samples for one target MM-DD, compute the percentile, write it.
+
+    Reads shared inputs from _WORKER_STATE (inherited via fork, not pickled).
+    Runs in a separate process so the 366 independent MM-DD outputs -- each
+    reading the same in-memory hindcast pool but writing its own file -- can
+    be computed in parallel instead of serially in one process.
+    """
+    calendardates = _WORKER_STATE["calendardates"]
+    loaded_doy = _WORKER_STATE["loaded_doy"]
+    lead_coords = _WORKER_STATE["lead_coords"]
+    window = _WORKER_STATE["window"]
+    quantile = _WORKER_STATE["quantile"]
+    out_dir = _WORKER_STATE["out_dir"]
+    var = _WORKER_STATE["var"]
+    group = _WORKER_STATE["group"]
+    model = _WORKER_STATE["model"]
+    percentile = _WORKER_STATE["percentile"]
+    overwrite = _WORKER_STATE["overwrite"]
+    dry_run = _WORKER_STATE["dry_run"]
+
+    mmdd_str = target_mmdd.replace("-", "")
+    out_file = out_dir / f"{var}_{group}-{model}_{mmdd_str}.{percentile}p.nc"
+
+    if out_file.exists() and not overwrite:
+        return "existed"
+
+    # Pool samples from all loaded MMDDs within ±window days.
+    target_doy = _doy_from_mmdd(target_mmdd)
+    dslist = []
+    for src_mmdd, members in calendardates.items():
+        if _circular_day_distance(loaded_doy[src_mmdd], target_doy) <= window:
+            dslist.extend(members)
+
+    if not dslist:
+        return "no_data"
+
+    if dry_run:
+        return "dry_run"
+
+    # Stack numpy arrays and compute percentile directly — avoids the
+    # expensive dask concat+rechunk path. Transpose to (L, Y, X, n_samples)
+    # so the sample axis is contiguous in memory, which is much faster for
+    # nanpercentile than computing along axis=0 of (n_samples, L, Y, X).
+    arr = np.stack(dslist, axis=0)  # (n_samples, L, Y, X)
+    n_leads = arr.shape[1]
+    arr_t = np.ascontiguousarray(arr.transpose(1, 2, 3, 0))  # (L, Y, X, n_samples)
+    del arr
+    n = arr_t.shape[-1]
+    k = int(np.round(quantile * (n - 1)))
+    # Replace NaN with inf so they sort to the end, enabling O(n) partial sort.
+    # Grid points where the k-th partition value is inf were all-NaN → set NaN.
+    # Done in-place on arr_t (already a fresh copy from the transpose above)
+    # rather than a further .copy(), to avoid a second multi-GB allocation
+    # per MM-DD -- this matters more now that several MM-DDs run at once.
+    arr_t[np.isnan(arr_t)] = np.inf
+    pct_arr = np.partition(arr_t, k, axis=-1)[..., k]
+    pct_arr[~np.isfinite(pct_arr)] = np.nan
+    pct_da = xr.DataArray(pct_arr, dims=("L", "Y", "X"))
+
+    # Assemble output: dims (month_day: 1, L, Y, X)
+    # Write explicit ascending Y/X coordinates (matching the sortby("Y")
+    # normalization in the loader) instead of leaving them as bare, unlabeled
+    # dimensions -- compute_exceedance previously had to infer lat labels
+    # from the forecast field's orientation, which silently mirrored
+    # north/south for any source model with a different native order.
+    n_lat, n_lon = pct_arr.shape[1], pct_arr.shape[2]
+    y_vals = np.linspace(-90.0, 90.0, n_lat)
+    x_vals = np.linspace(0.0, 360.0 - 360.0 / n_lon, n_lon)
+    l_vals = lead_coords[:n_leads] if lead_coords is not None else list(range(n_leads))
+    da = pct_da.assign_coords(L=l_vals, Y=y_vals, X=x_vals)
+    da = da.expand_dims(month_day=[target_mmdd])
+    ds_out = da.to_dataset(name=var)
+
+    # Atomic write via temp file (unique per-process suffix so concurrent
+    # workers never collide on the same temp path).
+    tmp = out_file.with_suffix(f".tmp{os.getpid()}.nc")
+    ds_out.to_netcdf(tmp)
+    tmp.rename(out_file)
+    return "wrote"
+
+
 def compute_percentiles(
     rt_root: str,
     hc_root: str,
@@ -122,6 +217,7 @@ def compute_percentiles(
     window: int,
     overwrite: bool,
     dry_run: bool,
+    n_workers: int = DEFAULT_WORKERS,
 ) -> int:
     model_id = f"{group}-{model}"
     quantile = percentile / 100.0
@@ -167,6 +263,33 @@ def compute_percentiles(
                     continue
 
                 ds = xr.open_dataset(path)
+
+                # Cap lead time at 45 days from init, matching the SubX
+                # weekly-product convention every other model in this archive
+                # already falls within natively (~39-44 days). GEOS_V3's raw
+                # hindcast runs much longer (60-92 days normally, and a real
+                # but unwanted anomaly on a few 2003-02 dates extends 300+
+                # days past init) -- applied here rather than at download time
+                # so the raw archive stays at full fidelity and this cap
+                # stays a one-line, easily revisited choice. Incidentally
+                # this also makes samples poolable/stackable across a
+                # hindcast window even for dates whose raw L length varies.
+                if "L" in ds.dims:
+                    ds = ds.sel(L=slice(None, 45))
+
+                # Normalize Y (lat) to ascending (-90 -> 90) before anything else.
+                # Different providers store hindcasts in different native orders
+                # (e.g. CFSv2/GEFSv12_CPC are descending 90 -> -90, others are
+                # already ascending) but this script stacks raw member arrays
+                # into the output with no coordinate values, so
+                # compute_exceedance has to *infer* lat labels later from the
+                # forecast field's orientation alone. Without a consistent
+                # source convention here, that inference silently mislabels
+                # (mirrors north/south) any model whose native order differs
+                # from what forecast.py normalizes to -- confirmed to have
+                # caused exactly that for CFSv2/GEFSv12_CPC (2026-07-13).
+                if "Y" in ds.dims:
+                    ds = ds.sortby("Y")
 
                 # Select pressure level when var has a P dimension (e.g. zg) --
                 # do this before the all-NaN sample check below so the check
@@ -229,64 +352,39 @@ def compute_percentiles(
             except ValueError:
                 continue
 
-    n_wrote = 0
-    n_existed = 0
+    # The 366 MM-DD outputs are fully independent (same read-only input pool,
+    # separate output files), so fan them out across a process pool instead
+    # of computing one at a time -- for models with large sample pools (e.g.
+    # CFSv2, which folds 4 daily cycles x many years into the per-day pool)
+    # the per-MM-DD stack/partition was the dominant cost (hours per model
+    # run serially), and this is embarrassingly parallel.
+    _WORKER_STATE.update(
+        calendardates=calendardates,
+        loaded_doy=loaded_doy,
+        lead_coords=lead_coords,
+        window=window,
+        quantile=quantile,
+        out_dir=out_dir,
+        var=var,
+        group=group,
+        model=model,
+        percentile=percentile,
+        overwrite=overwrite,
+        dry_run=dry_run,
+    )
 
-    print(f"\n[{model_id}] Computing {percentile}th percentile (window=±{window}d) and writing output...")
-    for target_mmdd in tqdm(all_target_mmdd, desc="MM-DD"):
-        mmdd_str = target_mmdd.replace("-", "")
-        out_file = out_dir / f"{var}_{group}-{model}_{mmdd_str}.{percentile}p.nc"
+    counts = {"wrote": 0, "existed": 0, "no_data": 0, "dry_run": 0}
+    print(f"\n[{model_id}] Computing {percentile}th percentile (window=±{window}d) "
+          f"with {n_workers} worker process(es)...")
+    ctx = mp.get_context("fork")
+    with ProcessPoolExecutor(max_workers=n_workers, mp_context=ctx) as pool:
+        futures = {pool.submit(_compute_and_write_one_mmdd, mmdd): mmdd for mmdd in all_target_mmdd}
+        for fut in tqdm(as_completed(futures), total=len(futures), desc="MM-DD"):
+            counts[fut.result()] += 1
 
-        if out_file.exists() and not overwrite:
-            n_existed += 1
-            continue
-
-        # Pool samples from all loaded MMDDs within ±window days.
-        target_doy = _doy_from_mmdd(target_mmdd)
-        dslist = []
-        for src_mmdd, members in calendardates.items():
-            if _circular_day_distance(loaded_doy[src_mmdd], target_doy) <= window:
-                dslist.extend(members)
-
-        if not dslist:
-            continue  # no data within window for this MMDD
-
-        if dry_run:
-            print(f"  [DRY-RUN] {out_file}  (n_samples={len(dslist)})")
-            n_wrote += 1
-            continue
-
-        # Stack numpy arrays and compute percentile directly — avoids the
-        # expensive dask concat+rechunk path. Transpose to (L, Y, X, n_samples)
-        # so the sample axis is contiguous in memory, which is much faster for
-        # nanpercentile than computing along axis=0 of (n_samples, L, Y, X).
-        arr = np.stack(dslist, axis=0)  # (n_samples, L, Y, X)
-        n_leads = arr.shape[1]
-        arr_t = np.ascontiguousarray(arr.transpose(1, 2, 3, 0))  # (L, Y, X, n_samples)
-        n = arr_t.shape[-1]
-        k = int(np.round(quantile * (n - 1)))
-        # Replace NaN with inf so they sort to the end, enabling O(n) partial sort.
-        # Grid points where the k-th partition value is inf were all-NaN → set NaN.
-        arr_filled = arr_t.copy()
-        arr_filled[np.isnan(arr_filled)] = np.inf
-        pct_arr = np.partition(arr_filled, k, axis=-1)[..., k]
-        pct_arr[~np.isfinite(pct_arr)] = np.nan
-        pct_da = xr.DataArray(pct_arr, dims=("L", "Y", "X"))
-
-        # Assemble output: dims (month_day: 1, L, Y, X)
-        l_vals = lead_coords[:n_leads] if lead_coords is not None else list(range(n_leads))
-        da = pct_da.assign_coords(L=l_vals)
-        da = da.expand_dims(month_day=[target_mmdd])
-        ds_out = da.to_dataset(name=var)
-
-        # Atomic write via temp file
-        tmp = out_file.with_suffix(".tmp.nc")
-        ds_out.to_netcdf(tmp)
-        tmp.rename(out_file)
-        n_wrote += 1
-
+    n_wrote = counts["wrote"] + counts["dry_run"]
     verb = "would write" if dry_run else "wrote"
-    print(f"\n  {verb} {n_wrote} files, {n_existed} already existed (skipped)")
+    print(f"\n  {verb} {n_wrote} files, {counts['existed']} already existed (skipped)")
     return 0
 
 
@@ -313,6 +411,9 @@ def main() -> int:
                     help="Overwrite existing output files")
     ap.add_argument("--dry-run",    action="store_true",
                     help="Preview output paths without writing any files")
+    ap.add_argument("--workers",    type=int, default=DEFAULT_WORKERS,
+                    help=f"Parallel worker processes for the per-MM-DD percentile "
+                         f"computation (default: {DEFAULT_WORKERS})")
     args = ap.parse_args()
 
     cfg = _load_cfg(args.config)
@@ -345,6 +446,7 @@ def main() -> int:
         years=years,
         overwrite=args.overwrite,
         dry_run=args.dry_run,
+        n_workers=args.workers,
     )
 
 

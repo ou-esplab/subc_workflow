@@ -98,6 +98,13 @@ declare -a ENTRIES=(
   "GMAO  GEOS_V2p1_5daily va   200"
   "GMAO  GEOS_V2p1_5daily zg   500"
 
+  # GEOS_V3's hindcast portal only provides pr/tas (see
+  # static/download_geos_v3_hindcast.py) -- no rlut/ts/ua/va/zg entries here,
+  # unlike every other model, because that data doesn't exist to compute a
+  # climatology from.
+  "GMAO  GEOS_V3          pr   sfc"
+  "GMAO  GEOS_V3          tas  2m"
+
   "NCEP  CFSv2            pr   sfc"
   "NCEP  CFSv2            tas  2m"
   "NCEP  CFSv2            zg   500"
