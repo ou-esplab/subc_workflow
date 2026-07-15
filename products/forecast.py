@@ -976,6 +976,28 @@ def main():
                 continue
             _debug_print(f"  [INFO] Using init for {var}: {group}-{chosen_model_name} {chosen_init:%Y%m%d}")
 
+            # Snap Y/X to exact integer degrees. Some sources (e.g. GEOS_V3's
+            # NRT regrid, subsampling a native 0.5-deg grid) carry ~1e-12
+            # floating-point noise on an otherwise-integer grid (the equator
+            # landing at 2.9e-13 instead of 0.0). Left alone, that noise makes
+            # this model's lat/lon fail to align (by name-and-value, not just
+            # name) with every other model's exact grid during merges and
+            # anomaly subtraction below -- either inflating a merged grid by
+            # an extra near-duplicate point, or silently dropping a row via
+            # inner-join alignment. Rounding well below 1-degree spacing is
+            # safe for any real data on this grid.
+            for _dim in ("Y", "X"):
+                if _dim in ds.coords:
+                    ds = ds.assign_coords({_dim: np.round(ds[_dim].values, 6)})
+
+            # Cap lead time at 45 days from init, matching the cap already applied
+            # in static/make_subx_climo.py and static/make_subx_percentiles.py.
+            # Needed here too: GEOS_V3's raw forecast runs 60-92 days, so without
+            # this its 'lead' length mismatches its (pre-capped) climatology's,
+            # crashing the clim["lead"] = ds["lead"] assignment below.
+            if "L" in ds.dims:
+                ds = ds.sel(L=slice(None, 45))
+
             model_id_local = f"{group}-{chosen_model_name}"
             prev_init = model_init_dates.get(model_id_local)
             if prev_init is None or chosen_init > prev_init:
@@ -1053,6 +1075,9 @@ def main():
                 print(f"  - missing climatology for {group}-{chosen_model_name} {var} mmdd={mmdd_last}")
                 continue
             clim = xr.open_dataset(climo_fname).rename({"time": "lead"})
+            for _dim in ("lat", "lon"):
+                if _dim in clim.coords:
+                    clim = clim.assign_coords({_dim: np.round(clim[_dim].values, 6)})
 
             # model-specific adjustments — unchanged
             if server_model == "GEFSv12":
@@ -1065,6 +1090,19 @@ def main():
                 if var == "pr":
                     clim = clim / 86400.0
             else:
+                # A model's real-time forecast and its hindcast-derived
+                # climatology can use different lead-day conventions -- e.g.
+                # GEOS_V3's NRT ingest emits half-day-offset L values (0.5,
+                # 1.5, ...) while its hindcast downloader emits integers (0,
+                # 1, ...), so the same 45-day cap applied independently on
+                # each side lands on different element counts (45 vs 46).
+                # Trim both to their common length so this positional
+                # assignment doesn't hit a dimension-size conflict.
+                n_lead_common = min(ds.sizes["lead"], clim.sizes["lead"])
+                if ds.sizes["lead"] != n_lead_common:
+                    ds = ds.isel(lead=slice(0, n_lead_common))
+                if clim.sizes["lead"] != n_lead_common:
+                    clim = clim.isel(lead=slice(0, n_lead_common))
                 clim["lead"] = ds["lead"]
 
             if var == "psl":

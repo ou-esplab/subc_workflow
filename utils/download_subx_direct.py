@@ -924,6 +924,15 @@ def _regrid_gmao_v3_to_1deg(ds: "xr.Dataset") -> "xr.Dataset":
             f"(got lat={ds['lat'].values[:3]}..{ds['lat'].values[-3:]}, "
             f"lon={ds['lon'].values[:3]}..{ds['lon'].values[-3:]})"
         )
+    # allclose above only validates closeness -- the subsampled native grid's
+    # floating-point values (e.g. the equator landing at ~2.9e-13 instead of
+    # exactly 0.0) were never actually replaced. Assign the exact values so
+    # this model's lat/lon match other models bit-for-bit; otherwise
+    # downstream multi-model merges in products/forecast.py treat GEOS_V3's
+    # near-0.0 as a distinct coordinate from every other model's exact 0.0,
+    # silently inflating the merged grid from 181 to 182 lat points and
+    # breaking nearest-neighbor threshold alignment in compute_exceedance.
+    ds = ds.assign_coords(lat=expected_lat, lon=expected_lon)
     return ds
 
 
