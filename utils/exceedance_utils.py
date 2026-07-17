@@ -107,6 +107,7 @@ def compute_exceedance(
     return_counts: bool = False,
     direction: str = 'above',
     aggregate: str = 'any',
+    min_days: Optional[int] = None,
 ) -> xr.DataArray:
     """
     Probability (or counts) that within each rolling window along 'lead', the forecast
@@ -117,9 +118,11 @@ def compute_exceedance(
       - aggregate='any' (default): flagged if AT LEAST ONE day in the window crosses
         (appropriate for a single extreme-event signal).
       - aggregate='all': flagged only if EVERY day in the window crosses (appropriate for
-        a sustained condition, e.g. a multi-day dry spell -- with 'any', a low-percentile
-        threshold near zero would trigger on almost any single dry day and not be a
-        meaningful drought signal).
+        a sustained condition, but very strict -- with a low-percentile threshold near
+        zero, requiring literally every day in the window is close to unsatisfiable).
+      - min_days=N (optional, overrides aggregate): flagged if AT LEAST N days in the
+        window cross -- a middle ground between 'any' (N=1) and 'all' (N=window), e.g.
+        for a drought signal that wants more than one dry day but not a full dry week.
 
     Restores the original vectorized approach:
       1) Subset forecast to region.
@@ -139,6 +142,11 @@ def compute_exceedance(
         raise ValueError(f"compute_exceedance: direction must be 'above' or 'below', got {direction!r}")
     if aggregate not in ('any', 'all'):
         raise ValueError(f"compute_exceedance: aggregate must be 'any' or 'all', got {aggregate!r}")
+    if min_days is not None:
+        if min_days < 1:
+            raise ValueError(f"compute_exceedance: min_days must be >=1, got {min_days}")
+        if min_days > window:
+            raise ValueError(f"compute_exceedance: min_days ({min_days}) cannot exceed window ({window})")
     # --------- 0) Defensive checks / copy ----------
     field = ds_field.copy()
     field = field.assign_attrs({})  # scrub attrs to avoid netCDF attr issues
@@ -268,9 +276,12 @@ def compute_exceedance(
     rolled_thresh = thr_var.rolling(lead=window).construct("window_dim")
 
     # Compare within window: does the window cross the threshold in the
-    # requested direction, aggregated per the requested mode (any/all day)?
+    # requested direction, aggregated per the requested mode (any/all/min_days)?
     crosses = (rolled_fcst > rolled_thresh) if direction == 'above' else (rolled_fcst < rolled_thresh)
-    exceed_bool = crosses.any(dim="window_dim") if aggregate == 'any' else crosses.all(dim="window_dim")
+    if min_days is not None:
+        exceed_bool = crosses.sum(dim="window_dim") >= min_days
+    else:
+        exceed_bool = crosses.any(dim="window_dim") if aggregate == 'any' else crosses.all(dim="window_dim")
 
     # Drop the first (window-1) incomplete windows
     exceed_bool = exceed_bool.isel(lead=slice(window - 1, None))

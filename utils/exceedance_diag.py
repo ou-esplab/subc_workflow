@@ -44,6 +44,8 @@ def main() -> int:
         max_fallback_days = int(ex.get("max_fallback_days", 7))
         direction = ex.get("direction", "above")
         aggregate = ex.get("aggregate", "any")
+        min_days = ex.get("min_days")
+        min_days = int(min_days) if min_days is not None else None
         product_tag = f"p{pct}_{direction}"
         mmdd = pd.Timestamp(fcstdate).strftime("%m%d")
 
@@ -177,6 +179,7 @@ def main() -> int:
                     lat_slice=None,
                     direction=direction,
                     aggregate=aggregate,
+                    min_days=min_days,
                 )
                 summary = probs.mean("time_window") if "time_window" in probs.dims else probs
 

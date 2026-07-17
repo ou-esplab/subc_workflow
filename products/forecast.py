@@ -699,6 +699,7 @@ def _plot_exceedance_mme_map(
     pct: int = 95,
     direction: str = "above",
     aggregate: str = "any",
+    min_days: int | None = None,
     product_tag: str | None = None,
     week_num: int = 1,
     week_start: pd.Timestamp | None = None,
@@ -725,7 +726,10 @@ def _plot_exceedance_mme_map(
         product_tag = f"p{pct}_{direction}"
 
     verb = "Exceeding" if direction == "above" else "Falling Below"
-    day_phrase = "At Least One Day" if aggregate == "any" else "Every Day"
+    if min_days is not None:
+        day_phrase = f"At Least {min_days} Days"
+    else:
+        day_phrase = "At Least One Day" if aggregate == "any" else "Every Day"
     projection = ccrs.Robinson() if global_projection else ccrs.PlateCarree()
     fig, ax = plt.subplots(figsize=(9.4, 5.7), subplot_kw={"projection": projection})
     fig.suptitle(
@@ -1316,6 +1320,8 @@ def main():
             max_fallback_days = int(ex.get('max_fallback_days', 7))
             direction = ex.get('direction', 'above')
             aggregate = ex.get('aggregate', 'any')
+            min_days = ex.get('min_days')
+            min_days = int(min_days) if min_days is not None else None
             # Uniquely tags this product's output filenames so multiple products for
             # the same var (e.g. pr above-95 vs pr below-5) never collide/overwrite.
             product_tag = f"p{pct}_{direction}"
@@ -1400,6 +1406,7 @@ def main():
                         return_counts=True,
                         direction=direction,
                         aggregate=aggregate,
+                        min_days=min_days,
                     )
                     ens_dim = 'M' if 'M' in field.dims else ('member' if 'member' in field.dims else None)
                     # Don't use field.sizes[ens_dim] for the member count: ds_full is
@@ -1464,6 +1471,7 @@ def main():
                         pct=pct,
                         direction=direction,
                         aggregate=aggregate,
+                        min_days=min_days,
                         product_tag=product_tag,
                         week_num=week_num,
                         week_start=wk_start,
