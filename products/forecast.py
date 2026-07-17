@@ -380,6 +380,7 @@ def _resolve_panel_models(
         "RSMAS-CCSM4",
         "EMC-GEFSv12_CPC",
         "GMAO-GEOS_V2p1",
+        "GMAO-GEOS_V3",
         "NCEP-CFSv2",
         "ECCC-GEPS8",
         "SUBC-MME",
@@ -396,12 +397,26 @@ def _resolve_panel_models(
         configured_resolved_set = set(configured_resolved)
 
         models = [m for m in preferred_order if m in configured_resolved_set or m in available_set]
-        extras_configured = [m for m in configured_resolved if m not in models]
-        extras_available = [m for m in available if m not in models and m != "SUBC-MME"]
+        # extras_available is computed against the same pre-extension
+        # `models` snapshot as extras_configured (not the post-extend list),
+        # so a model present in both configured_resolved and available (true
+        # for any real, successfully-ingested model not yet added to
+        # preferred_order) would otherwise be appended twice -- once from
+        # each list. Track claimed models explicitly to dedupe.
+        claimed = set(models)
+        extras_configured = [m for m in configured_resolved if m not in claimed]
+        claimed.update(extras_configured)
+        extras_available = [m for m in available if m not in claimed and m != "SUBC-MME"]
         models.extend(extras_configured)
         models.extend(extras_available)
 
-        if ("SUBC-MME" in configured_set or "SUBC-MME" in available_set) and "SUBC-MME" not in models:
+        # SUBC-MME must always be the last panel. It can land anywhere above
+        # (e.g. a real model added to config.yaml but not yet to
+        # preferred_order falls into extras_* and gets appended after it) --
+        # so move it to the end explicitly rather than relying on ordering
+        # falling out correctly from the lists above.
+        models = [m for m in models if m != "SUBC-MME"]
+        if "SUBC-MME" in configured_set or "SUBC-MME" in available_set:
             models.append("SUBC-MME")
         return models
 
