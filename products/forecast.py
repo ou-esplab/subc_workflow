@@ -777,22 +777,54 @@ def _plot_exceedance_mme_map(
             )
         plot_vals = np.asarray(data.values, dtype=float)
         plot_lon = np.asarray(data["lon"].values, dtype=float)
+        plot_lat = np.asarray(data["lat"].values, dtype=float)
         if global_projection:
             # The lon grid runs 0..359 without wrapping back to 360/0, which
             # leaves a visible seam at the prime meridian in a global map;
             # add_cyclic_point closes the circle by duplicating the first
             # column at the end.
             plot_vals, plot_lon = cutil.add_cyclic_point(plot_vals, coord=plot_lon)
-        mappable = ax.contourf(
-            plot_lon,
-            data["lat"],
-            plot_vals,
-            levels=levels,
-            cmap=cmap,
-            norm=norm,
-            transform=ccrs.PlateCarree(),
-            extend="both",
-        )
+        # Pre-transform coordinates rather than letting cartopy build
+        # projected polygons and clip them via GEOS/shapely: the cyclic-point
+        # seam column above, combined with a fully-saturated probability
+        # plateau (now that member counts -- and so probabilities -- are
+        # correct; see the mme_nens fix), can produce a degenerate polygon at
+        # the seam that GEOS's topology check rejects
+        # ("TopologyException: side location conflict"). transform_first=True
+        # sidesteps that whole code path by transforming the (lon, lat) grid
+        # to the target projection up front, which requires 2D gridded x/y.
+        lon2d, lat2d = np.meshgrid(plot_lon, plot_lat)
+        try:
+            mappable = ax.contourf(
+                lon2d,
+                lat2d,
+                plot_vals,
+                levels=levels,
+                cmap=cmap,
+                norm=norm,
+                transform=ccrs.PlateCarree(),
+                extend="both",
+                transform_first=True,
+            )
+        except Exception as exc:
+            print(f"[WARN] contourf failed ({exc}); falling back to pcolormesh for {region_name} {product_tag} wk{week_num}")
+            try:
+                mappable = ax.pcolormesh(
+                    lon2d,
+                    lat2d,
+                    plot_vals,
+                    cmap=cmap,
+                    norm=norm,
+                    transform=ccrs.PlateCarree(),
+                    shading="nearest",
+                    transform_first=True,
+                )
+            except Exception as exc2:
+                # Last resort: skip this one image rather than crash the
+                # whole forecast run over a single region/week's plot.
+                print(f"[WARN] pcolormesh fallback also failed ({exc2}); skipping map for {region_name} {product_tag} wk{week_num}")
+                ax.text(0.5, 0.5, "Plot failed", transform=ax.transAxes, ha="center", va="center", fontsize=10)
+                mappable = None
     else:
         ax.text(0.5, 0.5, "No data", transform=ax.transAxes, ha="center", va="center", fontsize=10)
 
@@ -1370,7 +1402,18 @@ def main():
                         aggregate=aggregate,
                     )
                     ens_dim = 'M' if 'M' in field.dims else ('member' if 'member' in field.dims else None)
-                    model_nens = int(field.sizes.get(ens_dim, 0)) if ens_dim else 1
+                    # Don't use field.sizes[ens_dim] for the member count: ds_full is
+                    # built via xr.concat(..., dim='model'), which NaN-pads the M
+                    # dimension to the max across all models, so every model's field
+                    # reports the same (largest) padded size here -- e.g. 6 models all
+                    # padded to GEFSv12_CPC's 31 members summed to a bogus 186 "Ens"
+                    # instead of the true 85, roughly halving every exceedance
+                    # probability (mme_counts / mme_nens) in the process. Use the
+                    # true per-model count computed before concatenation instead.
+                    if mid in model_ensemble_counts:
+                        model_nens = int(model_ensemble_counts[mid])
+                    else:
+                        model_nens = int(field.sizes.get(ens_dim, 0)) if ens_dim else 1
 
                     if region_name in mme_counts_by_region:
                         prev_counts, new_counts = xr.align(mme_counts_by_region[region_name], counts, join='inner')
