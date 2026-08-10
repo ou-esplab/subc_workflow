@@ -219,26 +219,81 @@ def _load_lead_day(nc_path: Path, init_date: str, lead_date: str) -> Optional[Di
 
 # ── Per-member / per-date processing ──────────────────────────────────────────
 
-def _download_member(
-    member_url: str, tmpdir: Path, workers: int
-) -> Dict[str, Path]:
-    """Download all lead-day files for one member; return {lead_date: local_path}."""
-    lead_files = _list_lead_files(member_url)
-    local_paths: Dict[str, Path] = {}
+def _download_members_flat(
+    members: List[Tuple[int, str]], tmpdir: Path, workers: int
+) -> Dict[int, Dict[str, Path]]:
+    """Download lead-day files for MULTIPLE members through one shared pool.
 
-    def _fetch(item: Tuple[str, str]) -> Tuple[str, Optional[Path]]:
-        lead_date, url = item
-        dest = tmpdir / f"{lead_date}_{Path(url).name}"
+    Previously each member was downloaded via its own ThreadPoolExecutor in a
+    plain `for member in members` loop, with an explicit sleep between them --
+    so members were fully serialized even though `workers` files could
+    download concurrently within any one member. For a 5-member date that's 5x
+    the wall-clock time of downloading one member's ~60-92 lead-day files, for
+    no benefit (confirmed 2026-08-10: retrying 107 partial dates was tracking
+    the exact per-date rate the original 856-date backfill took, ~3 min/date).
+    Flattening every (member, lead_date) pair across ALL requested members into
+    a single pool lets `workers` downloads run concurrently across members too,
+    not just within one.
+    """
+    all_tasks: List[Tuple[int, str, str]] = []
+    for member_idx, member_url in members:
+        for lead_date, url in _list_lead_files(member_url):
+            all_tasks.append((member_idx, lead_date, url))
+
+    local_paths: Dict[int, Dict[str, Path]] = {idx: {} for idx, _ in members}
+
+    def _fetch(item: Tuple[int, str, str]) -> Tuple[int, str, Optional[Path]]:
+        member_idx, lead_date, url = item
+        member_dir = tmpdir / f"ens{member_idx}"
+        member_dir.mkdir(parents=True, exist_ok=True)
+        dest = member_dir / f"{lead_date}_{Path(url).name}"
         ok = _download_with_retry(url, dest)
-        return lead_date, (dest if ok else None)
+        return member_idx, lead_date, (dest if ok else None)
 
     with ThreadPoolExecutor(max_workers=workers) as pool:
-        futures = [pool.submit(_fetch, item) for item in lead_files]
+        futures = [pool.submit(_fetch, item) for item in all_tasks]
         for fut in as_completed(futures):
-            lead_date, path = fut.result()
+            member_idx, lead_date, path = fut.result()
             if path is not None:
-                local_paths[lead_date] = path
+                local_paths[member_idx][lead_date] = path
     return local_paths
+
+
+def _existing_member_indices(out_files: Dict[str, Path]) -> set:
+    """Member indices already present in every existing output file for this
+    date (intersection across vars -- a member only counts as 'already good'
+    if it's present for both pr and tas)."""
+    common: Optional[set] = None
+    for path in out_files.values():
+        if not path.exists():
+            return set()
+        try:
+            ds = xr.open_dataset(path)
+            idx = set(int(v) for v in ds["M"].values)
+            ds.close()
+        except Exception:
+            return set()
+        common = idx if common is None else (common & idx)
+    return common or set()
+
+
+def _load_existing_members(
+    out_files: Dict[str, Path], indices: set
+) -> Dict[int, Dict[str, xr.DataArray]]:
+    """Re-load already-good members from existing output files, in the same
+    per-member {var: (M=1,L,Y,X) DataArray} shape _build_member_arrays
+    produces, so they can be merged with newly-fetched members without
+    re-downloading data that's already correct on disk."""
+    result: Dict[int, Dict[str, xr.DataArray]] = {idx: {} for idx in indices}
+    for var, path in out_files.items():
+        ds = xr.open_dataset(path)
+        da = ds[var]
+        if "S" in da.dims:
+            da = da.isel(S=0, drop=True)
+        for idx in indices:
+            result[idx][var] = da.sel(M=float(idx)).expand_dims(M=[float(idx)]).load()
+        ds.close()
+    return result
 
 
 def _build_member_arrays(
@@ -270,9 +325,16 @@ def _download_one_init_date(
     overwrite: bool,
     dry_run: bool,
     workers: int,
-    sleep_between_members: float,
 ) -> Dict[str, int]:
-    """Download all members for one init date and write pr/tas hindcast files."""
+    """Download all members for one init date and write pr/tas hindcast files.
+
+    If overwrite=True and output files already exist, members already present
+    in them (checked via the M coordinate) are re-used as-is instead of
+    re-downloaded -- only members missing from the existing file are fetched.
+    This matters for retrying a partial date (e.g. 3 of 5 members downloaded
+    last time): without it, "overwrite" meant re-fetching every member from
+    scratch even the ones that were already fine.
+    """
     counts = {"wrote": 0, "skipped": 0, "failed": 0}
 
     out_files = {
@@ -296,22 +358,38 @@ def _download_one_init_date(
         counts["wrote"] += 1
         return counts
 
+    existing_indices: set = set()
     member_results: Dict[int, Dict[str, xr.DataArray]] = {}
+    if overwrite and all(f.exists() for f in out_files.values()):
+        existing_indices = _existing_member_indices(out_files)
+        if existing_indices:
+            member_results = _load_existing_members(out_files, existing_indices)
+
+    members_to_fetch = [(idx, url) for idx, url in members if idx not in existing_indices]
+
+    if not members_to_fetch:
+        print(f"  [SKIP] {init_date} (all {len(existing_indices)} available members already present)")
+        counts["skipped"] += 1
+        return counts
+
+    if existing_indices:
+        print(f"  [{init_date}] {len(existing_indices)} members already present "
+              f"(ens{','.join(str(i) for i in sorted(existing_indices))}); "
+              f"fetching {len(members_to_fetch)} more")
+
     with tempfile.TemporaryDirectory() as tmpdir_str:
         tmpdir = Path(tmpdir_str)
-        for member_idx, member_url in members:
-            member_dir = tmpdir / f"ens{member_idx}"
-            member_dir.mkdir(parents=True, exist_ok=True)
-            print(f"  [{init_date}] Downloading ens{member_idx} ({len(members)} members total)")
-            local_paths = _download_member(member_url, member_dir, workers)
+        print(f"  [{init_date}] Downloading {len(members_to_fetch)} member(s) "
+              f"({', '.join(f'ens{i}' for i, _ in members_to_fetch)})")
+        local_paths_by_member = _download_members_flat(members_to_fetch, tmpdir, workers)
+        for member_idx, _ in members_to_fetch:
+            local_paths = local_paths_by_member.get(member_idx, {})
             if not local_paths:
                 print(f"    [WARN] No lead-day files downloaded for ens{member_idx}")
                 continue
             built = _build_member_arrays(member_idx, local_paths, init_date)
             if built is not None:
                 member_results[member_idx] = built
-            if member_idx != members[-1][0] and not dry_run:
-                time.sleep(sleep_between_members)
 
     if not member_results:
         print(f"  [ERROR] No usable members for {init_date}")
@@ -359,10 +437,9 @@ def main() -> int:
     ap.add_argument("--end-date", default=None, help="Last init date to include (YYYYMMDD)")
     ap.add_argument("--overwrite", action="store_true", help="Overwrite existing files")
     ap.add_argument("--dry-run", action="store_true", help="Preview without downloading")
-    ap.add_argument("--workers", type=int, default=4,
-                     help="Concurrent file downloads per member (default: 4)")
-    ap.add_argument("--sleep-members", type=float, default=1.0,
-                     help="Seconds between members within one init date (default: 1)")
+    ap.add_argument("--workers", type=int, default=8,
+                     help="Concurrent lead-day file downloads, shared across all "
+                          "members being fetched for one init date (default: 8)")
     ap.add_argument("--sleep-dates", type=float, default=3.0,
                      help="Seconds between init dates (default: 3)")
     ap.add_argument("--max-dates", type=int, default=None,
@@ -414,7 +491,6 @@ def main() -> int:
                 overwrite=args.overwrite,
                 dry_run=args.dry_run,
                 workers=args.workers,
-                sleep_between_members=args.sleep_members,
             )
         except Exception as exc:
             print(f"  [ERROR] {init_date} failed: {exc}")
