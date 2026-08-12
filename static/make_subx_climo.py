@@ -26,10 +26,13 @@ import os
 import re
 import tempfile
 import warnings
+from concurrent.futures import ProcessPoolExecutor
 from datetime import datetime
 from functools import partial
 from pathlib import Path
 
+import dask
+import netCDF4
 import numpy as np
 import pandas as pd
 import xarray as xr
@@ -106,32 +109,53 @@ def _preproc_rt_root(ds: xr.Dataset, var: str, lev: str) -> xr.Dataset:
 
 
 def _is_all_nan(path: str, var: str, lev: str) -> bool:
-    """Fast NaN check: sample a center spatial crop to avoid masked polar/coastal points."""
+    """Fast NaN check: sample a center spatial crop to avoid polar NaN mask.
+
+    Uses raw netCDF4 rather than xr.open_dataset: measured xarray's per-file
+    object construction/CF-decoding overhead at ~100-160ms/file here, vs
+    ~19ms/file for the equivalent raw netCDF4 open+tiny-read -- a 5-8x gap
+    that turned out to dominate wall-clock time far more than actual I/O or
+    parallelism (parallelizing the xarray version gave only modest gains
+    since each worker was still paying that same fixed per-file overhead).
+    """
     try:
-        ds = xr.open_dataset(path)
-        da = ds[var]
+        ds = netCDF4.Dataset(path)
         try:
-            plev = int(lev)
-            if "P" in da.dims:
-                da = da.sel(P=plev)
-        except ValueError:
-            pass
-        # Collapse S and M to get (L, Y, X)
-        if "S" in da.dims:
-            da = da.isel(S=0) if da.sizes["S"] == 1 else da.mean("S")
-        if "M" in da.dims:
-            da = da.isel(M=0)
-        # Sample a 5×5 center crop at first lead — avoids polar NaN mask
-        ny, nx = da.sizes.get("Y", 1), da.sizes.get("X", 1)
-        cy, cx = ny // 2, nx // 2
-        sample = da.isel(
-            L=0 if "L" in da.dims else {},
-            Y=slice(cy - 2, cy + 3),
-            X=slice(cx - 2, cx + 3),
-        )
-        result = bool(sample.isnull().all().item())
-        ds.close()
-        return result
+            v = ds.variables[var]
+            dims = v.dimensions
+            idx: list = [slice(None)] * len(dims)
+
+            if "P" in dims:
+                p_axis = dims.index("P")
+                try:
+                    plev = int(lev)
+                    p_vals = np.asarray(ds.variables["P"][:])
+                    idx[p_axis] = int(np.argmin(np.abs(p_vals - plev)))
+                except (ValueError, KeyError):
+                    idx[p_axis] = 0
+            if "S" in dims:
+                idx[dims.index("S")] = 0
+            if "M" in dims:
+                idx[dims.index("M")] = 0
+            if "L" in dims:
+                idx[dims.index("L")] = 0
+            if "Y" in dims:
+                y_axis = dims.index("Y")
+                ny = v.shape[y_axis]
+                cy = ny // 2
+                idx[y_axis] = slice(cy - 2, cy + 3)
+            if "X" in dims:
+                x_axis = dims.index("X")
+                nx = v.shape[x_axis]
+                cx = nx // 2
+                idx[x_axis] = slice(cx - 2, cx + 3)
+
+            sample = v[tuple(idx)]
+            if np.ma.isMaskedArray(sample):
+                sample = sample.filled(np.nan)
+            return bool(np.all(np.isnan(np.asarray(sample, dtype=float))))
+        finally:
+            ds.close()
     except Exception:
         return True
 
@@ -142,6 +166,7 @@ def _open_full_hindcast(
     lev: str,
     start_year: int | None,
     end_year: int | None,
+    workers: int = 8,
 ) -> tuple[xr.Dataset, list[str]]:
     """Open full/ IRI hindcast emean files (alternative to rt_root for models
     whose rt_root data is unusable, e.g. CFSv2 tas which is sea-ice only there).
@@ -172,13 +197,14 @@ def _open_full_hindcast(
         ds["time"] = np.arange(len(ds["time"]))
         return ds
 
-    ds = xr.open_mfdataset(
-        list(valid_files),
-        combine="nested",
-        concat_dim="init",
-        preprocess=_preproc,
-        parallel=False,
-    )
+    with dask.config.set(num_workers=workers):
+        ds = xr.open_mfdataset(
+            list(valid_files),
+            combine="nested",
+            concat_dim="init",
+            preprocess=_preproc,
+            parallel=True,
+        )
     ds["init"] = pd.to_datetime(list(dates))
     return ds, list(dates)
 
@@ -191,6 +217,7 @@ def _open_rt_root_hindcast(
     lev: str,
     start_year: int | None,
     end_year: int | None,
+    workers: int = 8,
 ) -> tuple[xr.Dataset, list[str]]:
     """Open all valid rt_root hindcast files as a multi-init Dataset.
 
@@ -220,9 +247,21 @@ def _open_rt_root_hindcast(
             f"No hindcast files for {group}-{model} {var} in {start_year}–{end_year}"
         )
 
-    # Exclude all-NaN placeholder files
-    print(f"  Checking {len(dated)} files for all-NaN placeholders...")
-    valid = [(f, d) for f, d in dated if not _is_all_nan(f, var, lev)]
+    # Exclude all-NaN placeholder files. Parallelized across `workers`
+    # processes -- measured first with a thread pool (I/O-bound, so threads
+    # seemed like the obvious fit) but real time barely beat user+sys time,
+    # meaning threads weren't actually overlapping: opening thousands of
+    # small netCDF/HDF5 files is dominated by metadata-parsing overhead that
+    # holds the GIL, not by GIL-releasing bulk data reads. A process pool
+    # sidesteps the GIL entirely. This was previously a fully serial
+    # per-file open+read loop: for models with thousands of hindcast dates
+    # (e.g. GEPS8 has ~5800 files in a 16-year window) the fixed per-file
+    # open overhead alone dominates wall-clock time when done one at a time.
+    print(f"  Checking {len(dated)} files for all-NaN placeholders ({workers} workers)...")
+    check_fn = partial(_is_all_nan, var=var, lev=lev)
+    with ProcessPoolExecutor(max_workers=workers) as pool:
+        is_nan_flags = list(pool.map(check_fn, [f for f, _ in dated]))
+    valid = [(f, d) for (f, d), is_nan in zip(dated, is_nan_flags) if not is_nan]
     n_skipped = len(dated) - len(valid)
     if n_skipped:
         print(f"  Skipped {n_skipped} all-NaN placeholder files")
@@ -232,14 +271,17 @@ def _open_rt_root_hindcast(
     valid_files, dates = zip(*valid)
     print(f"  Loading {len(valid_files)} files ({start_year}–{end_year})...")
 
+    # parallel=True lets dask open+read files concurrently (same motivation
+    # as the NaN-check parallelization above) instead of one at a time.
     preproc = partial(_preproc_rt_root, var=var, lev=lev)
-    ds = xr.open_mfdataset(
-        list(valid_files),
-        combine="nested",
-        concat_dim="init",
-        preprocess=preproc,
-        parallel=False,
-    )
+    with dask.config.set(num_workers=workers):
+        ds = xr.open_mfdataset(
+            list(valid_files),
+            combine="nested",
+            concat_dim="init",
+            preprocess=preproc,
+            parallel=True,
+        )
     ds["init"] = pd.to_datetime(list(dates))
     return ds, list(dates)
 
@@ -273,6 +315,7 @@ def make_climo(
     end_year: int | None,
     overwrite: bool,
     hindcast_dir: str | None = None,
+    workers: int = 8,
 ) -> None:
     model_id = f"{group}-{model}"
     out_dir = Path(hc_root) / f"{var}{lev}" / "daily" / "climo" / model_id
@@ -281,9 +324,9 @@ def make_climo(
     print(f"\n[{model_id}] {var}{lev}")
 
     if hindcast_dir:
-        ds, dates = _open_full_hindcast(hindcast_dir, var, lev, start_year, end_year)
+        ds, dates = _open_full_hindcast(hindcast_dir, var, lev, start_year, end_year, workers=workers)
     else:
-        ds, dates = _open_rt_root_hindcast(rt_root, group, model, var, lev, start_year, end_year)
+        ds, dates = _open_rt_root_hindcast(rt_root, group, model, var, lev, start_year, end_year, workers=workers)
     actual_start = min(int(d[:4]) for d in dates)
     actual_end   = max(int(d[:4]) for d in dates)
     print(f"  Using {len(dates)} init dates ({actual_start}–{actual_end})")
@@ -356,6 +399,9 @@ def main() -> int:
                     help="Read from this directory of full/ IRI emean files instead of rt_root "
                          "(e.g. for CFSv2 tas whose rt_root data is sea-ice only)")
     ap.add_argument("--overwrite", action="store_true", help="Overwrite existing files")
+    ap.add_argument("--workers", type=int, default=8,
+                    help="Parallel workers for the all-NaN placeholder check and "
+                         "hindcast file loading (default: 8)")
     args = ap.parse_args()
 
     cfg = _load_cfg(args.config)
@@ -387,6 +433,7 @@ def main() -> int:
                         end_year=args.end_year,
                         overwrite=args.overwrite,
                         hindcast_dir=args.hindcast_dir,
+                        workers=args.workers,
                     )
                 except Exception as exc:
                     msg = f"[ERROR] {group}-{model} {var}{lev}: {exc}"
@@ -418,6 +465,7 @@ def main() -> int:
             end_year=args.end_year,
             overwrite=args.overwrite,
             hindcast_dir=args.hindcast_dir,
+            workers=args.workers,
         )
     except Exception as exc:
         print(f"[ERROR] {exc}")
