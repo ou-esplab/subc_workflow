@@ -34,6 +34,7 @@ Usage
 from __future__ import annotations
 
 import argparse
+import json
 import multiprocessing as mp
 import os
 from concurrent.futures import ProcessPoolExecutor, as_completed
@@ -205,6 +206,42 @@ def _compute_and_write_one_mmdd(target_mmdd: str) -> str:
     return "wrote"
 
 
+def _period_confirmed_in_manifest(
+    hc_root: str, group: str, model: str, var: str, lev: str, percentile: int,
+    start_year: int, end_year: int,
+) -> bool:
+    """Check CLIMATOLOGY_MANIFEST.jsonl for a completed percentile record
+    covering this exact (group-model, var, lev, percentile) at this exact
+    start/end year -- see the identically-named helper in make_subx_climo.py
+    for why file existence alone is not sufficient (output filenames carry
+    no year-range info, so existing files could be stale leftovers from a
+    different period)."""
+    manifest_path = Path(hc_root) / "CLIMATOLOGY_MANIFEST.jsonl"
+    if not manifest_path.exists():
+        return False
+    entry_label = f"{group}-{model} {var} {lev}.{percentile}"
+    try:
+        with open(manifest_path, encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    rec = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if (
+                    rec.get("stage") == "percentile"
+                    and rec.get("start_year") == start_year
+                    and rec.get("end_year") == end_year
+                    and entry_label in (rec.get("entries") or [])
+                ):
+                    return True
+    except OSError:
+        return False
+    return False
+
+
 def compute_percentiles(
     rt_root: str,
     hc_root: str,
@@ -233,6 +270,39 @@ def compute_percentiles(
 
     if not dry_run:
         out_dir.mkdir(parents=True, exist_ok=True)
+
+    # Early-exit if every output file already exists AND the manifest
+    # confirms they were built for this exact year set: the per-MMDD skip
+    # check in _compute_and_write_one_mmdd only ever skipped the cheap write
+    # step -- the expensive "Loading hindcast files" pass below it (often
+    # the dominant cost, e.g. hours for CFSv2) still ran in full even when
+    # every target file was going to be skipped anyway. The 366 target
+    # MM-DDs are always the same fixed calendar days regardless of what's
+    # actually loaded, so existence alone can't distinguish "already done for
+    # this year set" from "stale leftovers from a different one" -- the
+    # manifest check is required for correctness, not just an optimization
+    # (see _period_confirmed_in_manifest's docstring). Assumes `years` is a
+    # contiguous range (min/max), matching how run_all_static.sh always
+    # builds it and how the manifest itself only records start/end year.
+    if not overwrite and not dry_run and years:
+        all_target_mmdd_early: list[str] = []
+        for m in range(1, 13):
+            for d in range(1, 32):
+                try:
+                    all_target_mmdd_early.append(pd.Timestamp(f"2000-{m:02d}-{d:02d}").strftime("%m-%d"))
+                except ValueError:
+                    continue
+        files_exist = all(
+            (out_dir / f"{var}_{group}-{model}_{mmdd.replace('-', '')}.{percentile}p.nc").exists()
+            for mmdd in all_target_mmdd_early
+        )
+        if files_exist and _period_confirmed_in_manifest(
+            hc_root, group, model, var, lev, percentile, min(years), max(years)
+        ):
+            print(f"[{model_id}] All {len(all_target_mmdd_early)} output files already exist and "
+                  f"are confirmed (manifest) for {min(years)}-{max(years)} p{percentile} -- "
+                  f"skipping (use --overwrite to force recomputation).")
+            return 0
 
     # ── 1. Load hindcast files and group by calendar MM-DD ────────────────────
     # Each entry: exact MMDD of the hindcast init date.

@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import argparse
 import glob
+import json
 import os
 import re
 import tempfile
@@ -257,10 +258,20 @@ def _open_rt_root_hindcast(
     # per-file open+read loop: for models with thousands of hindcast dates
     # (e.g. GEPS8 has ~5800 files in a 16-year window) the fixed per-file
     # open overhead alone dominates wall-clock time when done one at a time.
-    print(f"  Checking {len(dated)} files for all-NaN placeholders ({workers} workers)...")
+    # workers<=1 uses a plain serial loop instead of ProcessPoolExecutor --
+    # kept as an explicit escape hatch: this pool hung indefinitely (zero
+    # worker processes ever spawning, at any worker count) when run through
+    # the full script on esplab-0-3, despite the identical function/files/
+    # pool pattern working fine in isolation on the same node -- root cause
+    # not yet found. Serial is slower but known-reliable everywhere.
     check_fn = partial(_is_all_nan, var=var, lev=lev)
-    with ProcessPoolExecutor(max_workers=workers) as pool:
-        is_nan_flags = list(pool.map(check_fn, [f for f, _ in dated]))
+    if workers <= 1:
+        print(f"  Checking {len(dated)} files for all-NaN placeholders (serial)...")
+        is_nan_flags = [check_fn(f) for f, _ in dated]
+    else:
+        print(f"  Checking {len(dated)} files for all-NaN placeholders ({workers} workers)...")
+        with ProcessPoolExecutor(max_workers=workers) as pool:
+            is_nan_flags = list(pool.map(check_fn, [f for f, _ in dated]))
     valid = [(f, d) for (f, d), is_nan in zip(dated, is_nan_flags) if not is_nan]
     n_skipped = len(dated) - len(valid)
     if n_skipped:
@@ -273,6 +284,9 @@ def _open_rt_root_hindcast(
 
     # parallel=True lets dask open+read files concurrently (same motivation
     # as the NaN-check parallelization above) instead of one at a time.
+    # Uses dask's threaded scheduler (not processes), so it's not subject to
+    # the same fork-related hang as the ProcessPoolExecutor NaN-check above --
+    # kept gated on workers<=1 anyway for a consistent, simple "serial mode".
     preproc = partial(_preproc_rt_root, var=var, lev=lev)
     with dask.config.set(num_workers=workers):
         ds = xr.open_mfdataset(
@@ -280,7 +294,7 @@ def _open_rt_root_hindcast(
             combine="nested",
             concat_dim="init",
             preprocess=preproc,
-            parallel=True,
+            parallel=(workers > 1),
         )
     ds["init"] = pd.to_datetime(list(dates))
     return ds, list(dates)
@@ -304,6 +318,47 @@ def _triangular_smooth(da: xr.DataArray, window: int = 31, passes: int = 2) -> x
 
 # ── Core computation ──────────────────────────────────────────────────────────
 
+def _period_confirmed_in_manifest(
+    hc_root: str, group: str, model: str, var: str, lev: str,
+    start_year: int, end_year: int,
+) -> bool:
+    """Check CLIMATOLOGY_MANIFEST.jsonl for a completed climo record covering
+    this exact (group-model, var, lev) combo at this exact start/end year.
+
+    Output filenames carry no year-range info at all -- {var}_{group}-{model}_
+    {MMDD}.climo.p.nc is identical regardless of what period built it. So
+    "the files exist" alone does NOT mean "the files are for the period I
+    just asked for" -- they could be untouched leftovers from a completely
+    different (older) reference period that happens to occupy the same
+    path. The manifest is the only reliable record of which period a given
+    combo was actually last (re)computed for.
+    """
+    manifest_path = Path(hc_root) / "CLIMATOLOGY_MANIFEST.jsonl"
+    if not manifest_path.exists():
+        return False
+    entry_label = f"{group}-{model} {var} {lev}"
+    try:
+        with open(manifest_path, encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    rec = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if (
+                    rec.get("stage") == "climo"
+                    and rec.get("start_year") == start_year
+                    and rec.get("end_year") == end_year
+                    and entry_label in (rec.get("entries") or [])
+                ):
+                    return True
+    except OSError:
+        return False
+    return False
+
+
 def make_climo(
     rt_root: str,
     hc_root: str,
@@ -322,6 +377,33 @@ def make_climo(
     out_dir.mkdir(parents=True, exist_ok=True)
 
     print(f"\n[{model_id}] {var}{lev}")
+
+    # Early-exit if every output file already exists AND the manifest
+    # confirms they were built for this exact start_year/end_year: the
+    # per-file skip check at the end of this function only ever skipped the
+    # cheap write step -- the expensive hindcast load + NaN-check +
+    # groupby-mean computation above it still ran in full even when every
+    # file was going to be skipped anyway. Output is always exactly the same
+    # 366 MMDD names (0101-1231, including 0229) regardless of period, so
+    # file existence alone can't distinguish "already done for this period"
+    # from "stale leftovers from a different period" -- the manifest check
+    # is required for correctness, not just an optimization (see
+    # _period_confirmed_in_manifest's docstring). Skipped entirely (always
+    # recompute) when start_year/end_year is None (auto-detect mode), since
+    # there's no specific period to confirm against.
+    if not overwrite and start_year is not None and end_year is not None:
+        all_mmdd = [
+            datetime.strptime(f"1960-{doy}", "%Y-%j").strftime("%m%d")
+            for doy in range(1, 367)
+        ]
+        files_exist = all((out_dir / f"{var}_{group}-{model}_{mmdd}.climo.p.nc").exists() for mmdd in all_mmdd)
+        if files_exist and _period_confirmed_in_manifest(
+            hc_root, group, model, var, lev, start_year, end_year
+        ):
+            print(f"  All {len(all_mmdd)} output files already exist and are confirmed "
+                  f"(manifest) for {start_year}-{end_year} -- skipping "
+                  f"(use --overwrite to force recomputation).")
+            return
 
     if hindcast_dir:
         ds, dates = _open_full_hindcast(hindcast_dir, var, lev, start_year, end_year, workers=workers)
