@@ -98,6 +98,25 @@ def _preproc_rt_root(ds: xr.Dataset, var: str, lev: str) -> xr.Dataset:
     # Average over ensemble members
     if "M" in ds.dims:
         ds = ds.mean(dim="M")
+    # Round the spatial grid to a fixed precision and collapse any resulting
+    # duplicate rows. GEOS_V3's raw hindcast archive is inconsistent about
+    # whether its near-equator gridpoint lands at exactly 0.0 or at
+    # floating-point noise like -2.94e-13 (roughly split across the archive,
+    # apparently by which download/processing batch produced a given init
+    # date) -- open_mfdataset's default outer-join would otherwise union
+    # these into an extra Y row once files with both conventions get
+    # concatenated along "init". A handful of files even carry both values
+    # as two separate rows already, within a single file. Rounding first
+    # normalizes the common case; groupby-mean (only run when rounding
+    # actually created a duplicate, since it's the expensive path) merges
+    # the rest by averaging rows that represent the same physical point.
+    for _dim in ("Y", "X"):
+        if _dim in ds.coords:
+            ds = ds.assign_coords({_dim: np.round(ds[_dim].values, 6)})
+    if "Y" in ds.dims and not ds.indexes["Y"].is_unique:
+        ds = ds.groupby("Y").mean()
+    if "X" in ds.dims and not ds.indexes["X"].is_unique:
+        ds = ds.groupby("X").mean()
     # Rename L → time and convert to integer lead indices
     if "L" in ds.dims:
         ds = ds.rename({"L": "time"})
