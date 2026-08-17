@@ -154,4 +154,44 @@ without recomputing it from scratch.
 
 ## Verification results
 
-*(Filled in after the Phase 1 and Phase 2 runs complete.)*
+### Phase 1 (climatology) — complete 2026-08-14
+
+Run on esplab-0-3 in screen session `subc_climo_common_period`, 2026-08-13
+15:59 UTC to 2026-08-14 11:59 UTC (~20 hours). All 36 `(group,model,var,lev)`
+combos succeeded, 0 failures — confirmed in
+`CLIMATOLOGY_MANIFEST.jsonl` (36 entries, `start_year`/`end_year` 2001/2016,
+git commit `39259b6d7d8001891c8aa316fa237673f356a109`).
+
+- **File counts**: every combo has exactly 366/366 `*.climo.p.nc` files.
+- **No warnings/errors**: `grep` across all 36 per-combo logs
+  (`logs/climo_*.log`) for `WARN`/`ERROR`/`Traceback` found nothing.
+- **Physical plausibility**: spot-checked `pr`/`tas` global mean/min/max for
+  ECCC-GEPS8, NCEP-CFSv2, GMAO-GEOS_V3, RSMAS-CCSM4 across multiple months —
+  all in sane physical ranges. In particular, **NCEP-CFSv2 `tas` climatology
+  is confirmed real 2m-temperature data, not sea-ice-only**: June mean
+  281.7K (206–316K range) and January mean 277.0K (225–308K range) are both
+  physically realistic global temperature distributions, not the narrow
+  ~250–273K band sea-ice-only data would show. This resolves the caveat
+  flagged above — the `--hindcast-dir`/"sea-ice only" docstring in
+  `make_subx_climo.py` is confirmed stale.
+- **Past forecasts untouched**: no `paths.out_weekly` directory outside the
+  routine same-day (`20260813`/`20260814`) cron-generated forecasts was
+  modified during the run window.
+- **Performance note**: during this run, a serious performance bottleneck
+  was found and fixed live (see `make_subx_climo.py` inline comments and
+  `--workers` help text) — the NaN-check's `ProcessPoolExecutor` hung
+  unexplained on esplab-0-3 (fork-related, root cause never found), so it
+  had been made fully serial as a safe fallback; that fallback accidentally
+  *also* disabled `open_mfdataset`'s independent, thread-based
+  `parallel=True` loading, which is the actual dominant cost. Decoupling the
+  two (NaN-check always serial; loading always parallel via dask threads,
+  controlled by `--workers`) restored some but not all of the lost
+  throughput: measured per-combo speedup versus the fully-serial baseline
+  ranged from 0% to ~29% across different combos of the same run, suggesting
+  the remaining bottleneck is NFS storage bandwidth/contention rather than
+  client-side parallelism — there is likely no further easy win here without
+  changing the storage backend or restructuring how files are read.
+
+### Phase 2 (percentiles)
+
+*(Not yet started — pending explicit go-ahead per the phased plan.)*

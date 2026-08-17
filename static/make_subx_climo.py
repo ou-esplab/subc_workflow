@@ -27,7 +27,6 @@ import os
 import re
 import tempfile
 import warnings
-from concurrent.futures import ProcessPoolExecutor
 from datetime import datetime
 from functools import partial
 from pathlib import Path
@@ -267,30 +266,19 @@ def _open_rt_root_hindcast(
             f"No hindcast files for {group}-{model} {var} in {start_year}–{end_year}"
         )
 
-    # Exclude all-NaN placeholder files. Parallelized across `workers`
-    # processes -- measured first with a thread pool (I/O-bound, so threads
-    # seemed like the obvious fit) but real time barely beat user+sys time,
-    # meaning threads weren't actually overlapping: opening thousands of
-    # small netCDF/HDF5 files is dominated by metadata-parsing overhead that
-    # holds the GIL, not by GIL-releasing bulk data reads. A process pool
-    # sidesteps the GIL entirely. This was previously a fully serial
-    # per-file open+read loop: for models with thousands of hindcast dates
-    # (e.g. GEPS8 has ~5800 files in a 16-year window) the fixed per-file
-    # open overhead alone dominates wall-clock time when done one at a time.
-    # workers<=1 uses a plain serial loop instead of ProcessPoolExecutor --
-    # kept as an explicit escape hatch: this pool hung indefinitely (zero
-    # worker processes ever spawning, at any worker count) when run through
-    # the full script on esplab-0-3, despite the identical function/files/
-    # pool pattern working fine in isolation on the same node -- root cause
-    # not yet found. Serial is slower but known-reliable everywhere.
+    # Exclude all-NaN placeholder files. Always serial: a ProcessPoolExecutor
+    # version was tried (motivation: GIL-bound netCDF metadata parsing across
+    # thousands of small files) but hung indefinitely (zero worker processes
+    # ever spawning, at any worker count) when run through the full script on
+    # esplab-0-3, despite the identical function/files/pool pattern working
+    # fine in isolation on the same node -- root cause never found, fork-
+    # related is the leading suspect. Not worth the risk: after switching
+    # this check to raw netCDF4 (~19ms/file), serial is only ~2 min even for
+    # GEPS8's ~5800-file archive, so parallelizing it further isn't the
+    # actual bottleneck (see loading step below for that).
     check_fn = partial(_is_all_nan, var=var, lev=lev)
-    if workers <= 1:
-        print(f"  Checking {len(dated)} files for all-NaN placeholders (serial)...")
-        is_nan_flags = [check_fn(f) for f, _ in dated]
-    else:
-        print(f"  Checking {len(dated)} files for all-NaN placeholders ({workers} workers)...")
-        with ProcessPoolExecutor(max_workers=workers) as pool:
-            is_nan_flags = list(pool.map(check_fn, [f for f, _ in dated]))
+    print(f"  Checking {len(dated)} files for all-NaN placeholders (serial)...")
+    is_nan_flags = [check_fn(f) for f, _ in dated]
     valid = [(f, d) for (f, d), is_nan in zip(dated, is_nan_flags) if not is_nan]
     n_skipped = len(dated) - len(valid)
     if n_skipped:
@@ -301,11 +289,14 @@ def _open_rt_root_hindcast(
     valid_files, dates = zip(*valid)
     print(f"  Loading {len(valid_files)} files ({start_year}–{end_year})...")
 
-    # parallel=True lets dask open+read files concurrently (same motivation
-    # as the NaN-check parallelization above) instead of one at a time.
-    # Uses dask's threaded scheduler (not processes), so it's not subject to
-    # the same fork-related hang as the ProcessPoolExecutor NaN-check above --
-    # kept gated on workers<=1 anyway for a consistent, simple "serial mode".
+    # parallel=True lets dask open+read files concurrently instead of one at
+    # a time -- this is the actual dominant cost (confirmed live: a serial
+    # `--workers 1` run sat on this step for over an hour with 59GB RSS on a
+    # combo whose NaN-check took ~2 min). Uses dask's threaded scheduler, not
+    # a ProcessPoolExecutor/fork, so it's NOT subject to the hang above --
+    # verified directly with an isolated open_mfdataset(parallel=True) test
+    # against real files on esplab-0-3 (no hang, ~0.2s/file). Safe to enable
+    # independently of the (always-serial) NaN-check.
     preproc = partial(_preproc_rt_root, var=var, lev=lev)
     with dask.config.set(num_workers=workers):
         ds = xr.open_mfdataset(
@@ -501,8 +492,12 @@ def main() -> int:
                          "(e.g. for CFSv2 tas whose rt_root data is sea-ice only)")
     ap.add_argument("--overwrite", action="store_true", help="Overwrite existing files")
     ap.add_argument("--workers", type=int, default=8,
-                    help="Parallel workers for the all-NaN placeholder check and "
-                         "hindcast file loading (default: 8)")
+                    help="Dask threads for hindcast file loading (default: 8). "
+                         "The all-NaN placeholder check always runs serially "
+                         "regardless of this value -- a process-pool version hung "
+                         "on esplab-0-3 (unexplained, fork-related); loading uses "
+                         "dask's threaded scheduler instead, which is unaffected "
+                         "and is the actual dominant cost.")
     args = ap.parse_args()
 
     cfg = _load_cfg(args.config)
