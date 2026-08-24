@@ -374,6 +374,26 @@ def compute_percentiles(
                 if "Y" in ds.dims:
                     ds = ds.sortby("Y")
 
+                # Round the spatial grid to a fixed precision and collapse any
+                # resulting duplicate rows. GMAO-GEOS_V3's raw hindcast archive
+                # is inconsistent about whether its near-equator gridpoint
+                # lands at exactly 0.0 or at floating-point noise like
+                # -2.94e-13, and a handful of files carry both as separate
+                # rows -- this produces a 182-point (vs. correct 181-point)
+                # grid for those files, which then fails to np.stack against
+                # every other file's array later in
+                # _compute_and_write_one_mmdd ("all input arrays must have
+                # the same shape"). Same fix as static/make_subx_climo.py's
+                # _preproc_rt_root, applied here too since this script loads
+                # hindcast files independently rather than sharing that code.
+                for _dim in ("Y", "X"):
+                    if _dim in ds.coords:
+                        ds = ds.assign_coords({_dim: np.round(ds[_dim].values, 6)})
+                if "Y" in ds.dims and not ds.indexes["Y"].is_unique:
+                    ds = ds.groupby("Y").mean()
+                if "X" in ds.dims and not ds.indexes["X"].is_unique:
+                    ds = ds.groupby("X").mean()
+
                 # Select pressure level when var has a P dimension (e.g. zg) --
                 # do this before the all-NaN sample check below so the check
                 # inspects the actually-requested level, not an arbitrary one.
