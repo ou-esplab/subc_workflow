@@ -164,6 +164,19 @@ def _compute_and_write_one_mmdd(target_mmdd: str) -> str:
     if dry_run:
         return "dry_run"
 
+    # Truncate every pooled sample to the shortest lead length in the pool
+    # before stacking. Samples come from different hindcast files (different
+    # years, different MM-DDs within the window), and while most models'
+    # files share one native lead length, some (e.g. GMAO-GEOS_V3) vary by a
+    # day or two file-to-file -- np.stack requires identical shapes, so an
+    # unguarded stack crashes on the first mismatched pool (confirmed: 2026-
+    # 08-19 Phase 2 run, "ValueError: all input arrays must have the same
+    # shape"). Truncating rather than padding avoids fabricating data; losing
+    # a day or two of lead length off samples that are already being pooled
+    # across a +/-15-day window is immaterial to the climatological result.
+    min_leads = min(a.shape[0] for a in dslist)
+    dslist = [a[:min_leads] if a.shape[0] > min_leads else a for a in dslist]
+
     # Stack numpy arrays and compute percentile directly — avoids the
     # expensive dask concat+rechunk path. Transpose to (L, Y, X, n_samples)
     # so the sample axis is contiguous in memory, which is much faster for
