@@ -184,6 +184,30 @@ def compute_exceedance(
     if 'lead' not in field.sizes:
         raise ValueError(f"compute_exceedance: forecast has no 'lead' dimension. dims={dict(field.sizes)}")
 
+    # Drop leading/trailing all-NaN lead positions before anything else.
+    # `field` typically comes from a multi-model dataset built via an
+    # outer-join concat across models (safe_concat in
+    # utils/subc_pycpt_utils.py) that pads every model's 'lead' axis to the
+    # union of all models' date ranges. If this model's own init is later
+    # than another model's, its real data starts partway into that shared
+    # axis -- but the threshold-alignment step below has no absolute dates
+    # to go on (a threshold file is indexed by day-since-init, not calendar
+    # date) and assumes lead position 0 is this model's own first forecast
+    # day. Left untrimmed, that assumption silently shifts by however many
+    # lead positions this model was padded by, and the n_common=min(...)
+    # truncation a few lines down then drops real trailing days instead of
+    # the (correctly ignorable) leading padding. Confirmed to have dropped
+    # week 4 from the entire pooled MME product (which needs every model to
+    # agree on a date) when GMAO-GEOS_V3's real-time feed lagged 5 days
+    # behind the rest of the ensemble on 2026-08-20.
+    non_lead_dims = [d for d in field.dims if d != 'lead']
+    lead_all_nan = field.isnull().all(dim=non_lead_dims) if non_lead_dims else field.isnull()
+    if bool(lead_all_nan.any()):
+        valid_lead_idx = np.flatnonzero(~lead_all_nan.values)
+        if valid_lead_idx.size == 0:
+            raise ValueError("compute_exceedance: forecast field is all-NaN across every lead.")
+        field = field.isel(lead=slice(int(valid_lead_idx[0]), int(valid_lead_idx[-1]) + 1))
+
     n_lead = int(field.sizes['lead'])
     if n_lead < 1:
         raise ValueError("compute_exceedance: forecast lead length is zero.")
