@@ -117,6 +117,7 @@ pycpt_regions:
   - Venezuela
   - Iran
   - Mexico
+  - EastAfrica
 regions:
   - name: Global
     subx:  { lon: [0, 360], lat: [-90, 90] }
@@ -136,6 +137,9 @@ regions:
   - name: CAsia
     subx:  { lon: [45, 89], lat: [29, 56] }
     pycpt: { lon: [45, 89], lat: [29, 56] }
+  - name: EastAfrica
+    subx:  { lon: [28, 52], lat: [-12, 15] }
+    pycpt: { lon: [28, 52], lat: [-12, 15] }
 pycpt:
   # Local CHIRPS daily data directory and variable name for building weekly files if needed
   local_chirps_daily_dir: /data/esplab/shared/obs/gridded/atm/precip/daily/chirps-v2.0/p25

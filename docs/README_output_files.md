@@ -104,7 +104,7 @@ The main product generation stage. Produces all scientific data files and visual
 | `LongwaveAtToa` | OLR anomaly (rlut) | W/m² |
 | `MSLP` | Mean sea level pressure anomaly | Pa |
 
-**Domains used in regional filenames:** `Global`, `NorthAmerica`, `Venezuela`, `Iran`, `Mexico`, `NorthernHemisphere` (zg only)
+**Domains used in regional filenames:** `Global`, `NorthAmerica`, `Venezuela`, `Iran`, `Mexico`, `EastAfrica`, `NorthernHemisphere` (zg only)
 
 ### Image files (`images/`)
 
@@ -155,7 +155,7 @@ Default `pycpt_case_root`: `{out_weekly}/pycpt/`
 | `plots/` | `pycpt_rpss_w{W}_{REGION}_{SEASON}_{FCSTDATE}.png` | PNG | RPSS (Ranked Probability Skill Score) diagnostic map per week. |
 | `plots/` | `bc_week{W}_{MODEL}_{REGION}_{FCSTDATE}.png` | PNG | Bias-corrected forecast plot showing before/after CPT calibration. |
 
-**Configured regions:** `Venezuela`, `Iran`, `Mexico` (from `pycpt_regions` in `config.yaml`)
+**Configured regions:** `Venezuela`, `Iran`, `Mexico`, `EastAfrica` (from `pycpt_regions` in `config.yaml`)
 
 ---
 
@@ -219,4 +219,4 @@ The following `config.yaml` keys control output paths:
 | `arraylake.variables` | `[pr, tas, rlut, ts, ua, va, zg]` | Variables synced to ArrayLake |
 | `arraylake.skip_models` | `[NCEP-CFSv2, GMAO-GEOS_V3]` | Models excluded from ArrayLake |
 | `exceedance` | list of 3 product configs | Each entry: `var`, `lev`, `percentile`, `direction` (`above`/`below`), `aggregate` (`any`/`all`), `window_days`, `max_fallback_days` |
-| `pycpt_regions` | `[Venezuela, Iran, Mexico]` | Regions processed by PyCPT stage |
+| `pycpt_regions` | `[Venezuela, Iran, Mexico, EastAfrica]` | Regions processed by PyCPT stage |

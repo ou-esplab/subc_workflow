@@ -13,7 +13,7 @@ The workflow also maintains a public, cloud-hosted copy of the raw ensemble fore
 Products are available for:
 
 - **Variables:** Precipitation (`pr`), 2-meter temperature (`tas`), surface temperature (`ts`), outgoing longwave radiation (`rlut`), 200 hPa zonal/meridional wind (`ua`, `va`), 500 hPa geopotential height (`zg`) — not every model provides every variable (see the [Models](#models) table below).
-- **Regions:** Global, North America, Venezuela, Iran, Mexico, Central Asia.
+- **Regions:** Global, North America, Venezuela, Iran, Mexico, Central Asia, East Africa.
 - **Lead weeks:** Weeks 1–4 after each Thursday initialization, plus a combined Weeks 3–4 outlook.
 - **Climatological baseline:** Each model's own hindcast climatology — models are not recalibrated to a shared observational baseline before combination (see [Reference Datasets](#reference-datasets)).
 
@@ -77,6 +77,7 @@ Three exceedance products are computed, each a single map per region/week (not a
 | Iran | 40–64°E, 24–40°N |
 | Mexico | 242–263°E, 20–33°N |
 | CAsia | 45–89°E, 29–56°N |
+| EastAfrica | 28–52°E, 12°S–15°N |
 
 ---
 
@@ -120,7 +121,7 @@ Under `forecast/{FCSTDATE}/images/`, all PNG at 150 dpi:
 **Placeholder legend:**
 - `{FCSTDATE}` — initialization Thursday, `YYYYMMDD`
 - `{Prefix}` — variable label: `2mTemp`, `Precip`, `500hPaGeopotentialHeight`, `SfcTemp`, `LongwaveAtToa`, `MSLP`
-- `{Region}` — `Global`, `NorthAmerica`, `Venezuela`, `Iran`, `Mexico`, `CAsia`
+- `{Region}` — `Global`, `NorthAmerica`, `Venezuela`, `Iran`, `Mexico`, `CAsia`, `EastAfrica`
 - `{var}` — short variable code: `pr`, `tas`, `zg`, etc.
 - `{Tag}` — exceedance product tag, `p{percentile}_{direction}`: `p95_above` (precip/temp exceedance), `p5_below` (precip drought)
 - `{W}` — week number, 1–4
