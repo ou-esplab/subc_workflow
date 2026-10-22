@@ -21,7 +21,7 @@
 # Optional overrides via environment variables:
 #   SUBX_CONFIG   — path to config YAML (default: config.yaml next to this script)
 #   SUBX_INIT     — override forecast init date as YYYYMMDD (default: latest Thursday)
-#   SUBX_STAGES   — space-separated stage list (default: "ingest preprocess products publish arraylake")
+#   SUBX_STAGES   — space-separated stage list (default: "ingest preprocess products publish arraylake gdex")
 #                   (pycpt disabled by default; see below)
 #   CONDA_BASE    — path to miniconda/anaconda root (default: ~/miniconda3)
 #   ENV_NAME      — conda environment name (default: subc_workflow_env)
@@ -35,10 +35,11 @@ cd "$ROOT_DIR"
 
 # ---- Configuration ----------------------------------------------------------
 CONFIG="${SUBX_CONFIG:-$ROOT_DIR/config.yaml}"
-STAGES="${SUBX_STAGES:-ingest preprocess products publish arraylake}"
+STAGES="${SUBX_STAGES:-ingest preprocess products publish arraylake gdex}"
 CONDA_BASE="${CONDA_BASE:-$HOME/miniconda3}"
 ENV_NAME="${ENV_NAME:-subc_workflow_env}"
 export SUBC_PYCPT_ENV="${SUBC_PYCPT_ENV:-subc_pycpt_2_8_2}"
+export SUBC_GDEX_ENV="${SUBC_GDEX_ENV:-subc_globus_env}"
 LOCK_FILE="/tmp/subx_cron.lock"
 
 # ---- Logging ----------------------------------------------------------------

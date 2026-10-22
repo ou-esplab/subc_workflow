@@ -41,8 +41,8 @@ def main():
     ap.add_argument("--config", required=True, help="YAML config file")
     ap.add_argument("--init", default=None, help="Init date: SubX=YYYYMMDD, NMME=YYYYMM or YYYYMMDD")
     ap.add_argument("--system", required=True, help="subx|nmme")
-    ap.add_argument("--stages", nargs="*", default=["ingest","arraylake","preprocess","products","pycpt","publish"],
-                    help="Stages to run in order: ingest arraylake preprocess products pycpt publish")
+    ap.add_argument("--stages", nargs="*", default=["ingest","arraylake","gdex","preprocess","products","pycpt","publish"],
+                    help="Stages to run in order: ingest arraylake gdex preprocess products pycpt publish")
     ap.add_argument("--publish-subdir", default=None,
                     help="SubX only: optional destination subdir under date, e.g., test")
     ap.add_argument("--products-dry-run", action="store_true",
@@ -59,6 +59,8 @@ def main():
                     help="SubX only: run PyCPT in smoke mode (data prep only)")
     ap.add_argument("--arraylake-dry-run", action="store_true",
                     help="SubX only: scan ArrayLake inputs and report pending updates without writing")
+    ap.add_argument("--gdex-dry-run", action="store_true",
+                    help="SubX only: scan GDEX inputs and report pending Globus transfers without submitting them")
     ap.add_argument("--ingest-model", default=None,
                     help="SubX only: limit ingest to one model, e.g. ECCC-GEPS8")
     args = ap.parse_args()
@@ -86,6 +88,7 @@ def main():
             "products":   [str(ROOT_DIR / "products" / "make_fcsts.sh"), init, config_path],
             "pycpt":      pycpt_cmd,
             "arraylake":  [str(ROOT_DIR / "arraylake" / "run_addvars_rt.sh"), init, config_path],
+            "gdex":       [str(ROOT_DIR / "gdex" / "run_gdex_sync.sh"), init, config_path],
             "publish":    [str(ROOT_DIR / "publish" / "publish_subx_web.sh"), init, config_path],
         }
         stage_envs = {
@@ -106,6 +109,9 @@ def main():
             },
             "arraylake": {
                 "ARRAYLAKE_DRY_RUN": "1" if args.arraylake_dry_run else None,
+            },
+            "gdex": {
+                "GDEX_DRY_RUN": "1" if args.gdex_dry_run else None,
             },
         }
     elif system == "nmme":

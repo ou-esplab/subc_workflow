@@ -33,6 +33,7 @@ class CliWorkflowTests(unittest.TestCase):
             self.assertEqual([Path(call[0][0]).name for call in calls], [
                 "update_subx_fcsts.sh",
                 "run_addvars_rt.sh",
+                "run_gdex_sync.sh",
                 "run_preprocess.sh",
                 "make_fcsts.sh",
                 "pycpt_run.sh",

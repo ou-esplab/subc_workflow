@@ -180,6 +180,31 @@ Transfers products to the web server for public access.
 
 ---
 
+## Stage 7: GDEX
+
+Syncs raw model files to a public mirror hosted by NCAR GDEX, over Globus.
+
+**Destination:** NCAR GDEX Globus collection (`gdex.dest_endpoint_id`), path `gdex.dest_root` (default `/lustre/desc1/espat/s2s/SubX/`)
+
+**Data organization:** mirrors the local `rt_root` layout exactly, same filenames as locally.
+
+| GDEX path | Content |
+|---|---|
+| `{group}-{model}/forecast/{var}/{var}_{group}-{model}_{YYYYMMDD}.daily.nc` | Raw forecast files, synced incrementally as new init dates appear locally. |
+| `{group}-{model}/hindcast/{var}/{var}_{group}-{model}_{YYYYMMDD}.daily.nc` | Raw hindcast files, populated by a one-time backfill ([gdex/backfill_hindcast_to_gdex.py](../gdex/backfill_hindcast_to_gdex.py)), not kept in sync afterward. |
+
+**Variables synced:** `pr`, `tas`, `rlut`, `ts`, `ua`, `va`, `zg` (configurable via `gdex.variables`)
+**Skipped models:** configurable via `gdex.skip_models` (default: none)
+
+**Notes:**
+- Raw model files only (`rt_root` / `gdex.input_root`) — no derived hindcast climatology/percentiles (`hc_root`) or weekly forecast products (`out_weekly`) are synced.
+- Enabled (`gdex.enabled: true`) since 2026-10-22, after the one-time hindcast and forecast backfills were verified; set it to `false` to skip the stage. The stage wrapper (`gdex/run_gdex_sync.sh`) exits cleanly when disabled.
+- State is inferred purely from what's already present at the destination (`globus ls`) — there's no local manifest/state file, the same "trust the destination" approach ArrayLake's sync uses.
+- `globus-cli` runs from its own dedicated conda env (`subc_globus_env` by default, override via `SUBC_GDEX_ENV`), not `subc_workflow_env` — its OAuth token cache needs Python's `sqlite3` module, which is broken in `subc_workflow_env` due to a pre-existing, unrelated `sqlite`/`libsqlite` conda package conflict (same isolation pattern as PyCPT's `SUBC_PYCPT_ENV`, but only the `globus` binary calls are routed through it, not the whole `gdex/` scripts). Requires a one-time `globus login` OAuth flow completed for the user running the pipeline in that env; credentials are cached by `globus-cli` itself (`~/.globus/cli`), not stored in this repo.
+- All live-transfer testing should run inside a `screen` session — Globus transfers of any real size take time and must not be run in the foreground.
+
+---
+
 ## Naming Conventions
 
 | Component | Pattern | Example |
@@ -218,5 +243,12 @@ The following `config.yaml` keys control output paths:
 | `arraylake.repo` | `ou-subc/subc-forecasts` | ArrayLake repository |
 | `arraylake.variables` | `[pr, tas, rlut, ts, ua, va, zg]` | Variables synced to ArrayLake |
 | `arraylake.skip_models` | `[NCEP-CFSv2, GMAO-GEOS_V3]` | Models excluded from ArrayLake |
+| `gdex.enabled` | `true` | Whether the GDEX sync stage runs |
+| `gdex.dest_endpoint_id` | `d33b3614-6d04-11e5-ba46-22000b92c6ec` | Destination Globus collection for the NCAR GDEX mirror |
+| `gdex.dest_root` | `/lustre/desc1/espat/s2s/SubX/` | Destination path root on the GDEX collection |
+| `gdex.variables` | `[pr, tas, rlut, ts, ua, va, zg]` | Variables synced to GDEX |
+| `gdex.skip_models` | `[]` | Models excluded from GDEX |
+| `gdex.batch_chunk_size` | `5000` | Files per Globus batch task; a failed chunk is retried on its own |
+| `gdex.max_active_tasks` | `3` | Concurrent Globus tasks (Globus allows 3 active per user; extras only queue) |
 | `exceedance` | list of 3 product configs | Each entry: `var`, `lev`, `percentile`, `direction` (`above`/`below`), `aggregate` (`any`/`all`), `window_days`, `max_fallback_days` |
 | `pycpt_regions` | `[Venezuela, Iran, Mexico, EastAfrica]` | Regions processed by PyCPT stage |

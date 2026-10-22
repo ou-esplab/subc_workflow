@@ -204,3 +204,20 @@ arraylake:
   #     ECCC-GEPS8: [pr, tas]
   model_vars:
     ECCC-GEPS8: [pr, rlut, tas, ts, ua, va, zg]
+
+gdex:
+  enabled: true           # backfill (hindcast + forecast) verified 2026-10-22; cron gdex stage syncs new forecasts
+  source_endpoint_id: 23fdb214-64aa-11ee-b7b2-05db949c5fc5   # kpegion-qlcs Globus Connect Personal endpoint (covers /data); the old esplab endpoint was deleted
+  dest_endpoint_id: d33b3614-6d04-11e5-ba46-22000b92c6ec
+  dest_root: /lustre/desc1/espat/s2s/SubX/
+  input_root: null        # falls back to paths.rt_root, same convention as arraylake.input_root
+  variables: [pr, tas, rlut, ts, ua, va, zg]   # mirrors arraylake.variables default
+  skip_models: []
+  model_vars: {}
+  task_poll_interval_s: 30
+  task_wait_timeout_s: 3600
+  gcp_path: ~/.globusconnectpersonal/globusconnectpersonal-3.2.2/globusconnectpersonal   # source is a GCP endpoint: checked/restarted before each transfer
+  gcp_screen_name: gcp_endpoint
+  gcp_start_timeout_s: 120
+  batch_chunk_size: 5000   # files per Globus batch task; a failed chunk retries alone
+  max_active_tasks: 3      # Globus allows 3 active tasks per user; extras only queue
