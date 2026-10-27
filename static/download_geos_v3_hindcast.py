@@ -290,6 +290,9 @@ def _load_existing_members(
         da = ds[var]
         if "S" in da.dims:
             da = da.isel(S=0, drop=True)
+        if da["L"].dtype.kind == "f":
+            # Files are labelled float32 0.5..N-0.5 on disk; members are merged on int offsets 0..N-1.
+            da = da.assign_coords(L=np.floor(da["L"].values).astype("int64"))
         for idx in indices:
             result[idx][var] = da.sel(M=float(idx)).expand_dims(M=[float(idx)]).load()
         ds.close()
@@ -414,6 +417,10 @@ def _download_one_init_date(
         combined = combined.expand_dims(S=[np.datetime64(pd.Timestamp(init_date), "ns")])
         combined = combined.transpose("S", "M", "L", "Y", "X")
         ds_out = combined.to_dataset(name=var)
+        # SubX convention: float32 days, first daily mean labelled 0.5 (int offsets 0..N-1 above
+        # are only used to align members). Applied after the reindex so int(l) logic is unchanged.
+        ds_out["L"] = ("L", (ds_out["L"].values.astype("float64") + 0.5).astype(np.float32),
+                       {"units": "days", "long_name": "Lead", "standard_name": "forecast_period"})
 
         out_file = out_files[var]
         out_file.parent.mkdir(parents=True, exist_ok=True)

@@ -55,6 +55,7 @@ Default `rt_root`: `/data/esplab/subc-backup/`
 - One file per initialization date per variable per model.
 - Downloads limited to files within a configurable lookback window (default: last 7 days for realtime runs).
 - CFSv2 files contain all four daily start times (00z, 06z, 12z, 18z) merged into one file per calendar date.
+- **Lead labels (`L`):** float32 days, labelled by the *middle* of each daily mean, so the first lead is 0.5 (`0.5, 1.5, 2.5, ...`) for every model's forecast **and** hindcast. The one exception is the EMC-GEFSv12_CPC forecast, which starts at 1.5 (34 leads) on purpose because the real-time GEFS data has no first day; its hindcast starts at 0.5 (35 leads). Only the `L` coordinate is ever relabelled; data values are untouched. Audit with `utils/audit_archive_leads.py --kind {forecast,hindcast}`; fix with `utils/relabel_archive_leads.py` (float32 files, in place) and `utils/rewrite_geos_v3_hindcast_leads.py` (GEOS_V3 hindcast, which was stored as int64 offsets 0..N-1).
 
 ---
 
