@@ -141,13 +141,6 @@ declare -a ENTRIES=(
   "ESRL  FIMr1p1          va   200"
   "ESRL  FIMr1p1          zg   500"
 
-  "GMAO  GEOS_V2p1_5daily pr   sfc"
-  "GMAO  GEOS_V2p1_5daily rlut sfc"
-  "GMAO  GEOS_V2p1_5daily tas  2m"
-  "GMAO  GEOS_V2p1_5daily ts   sfc"
-  "GMAO  GEOS_V2p1_5daily ua   200"
-  "GMAO  GEOS_V2p1_5daily va   200"
-  "GMAO  GEOS_V2p1_5daily zg   500"
 
   # GEOS_V3's hindcast portal only provides pr/tas (see
   # static/download_geos_v3_hindcast.py) -- no rlut/ts/ua/va/zg entries here,

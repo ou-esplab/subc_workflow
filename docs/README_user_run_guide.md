@@ -141,7 +141,6 @@ ingest:
   primary_enabled: true
   model_source:
     ESRL-FIMr1p1: direct_esrl
-    GMAO-GEOS_V2p1_5daily: direct_gmao
     GMAO-GEOS_V3: direct_gmao_v3
     ECCC-GEPS8: direct_eccc
     RSMAS-CCSM4: direct_rsmas
@@ -150,7 +149,6 @@ ingest:
     rt_root: /data/esplab/subc-backup-direct-shadow
     model_source:
       ESRL-FIMr1p1: direct_esrl
-      GMAO-GEOS_V2p1_5daily: direct_gmao
       ECCC-GEPS8: direct_eccc
       RSMAS-CCSM4: direct_rsmas
   direct:
@@ -173,9 +171,9 @@ Supported source values: `iridl`, `direct`, `direct_esrl`, `direct_gmao`, `direc
 With the top-level `model_source` populated as above, those models ingest
 directly from their provider endpoints into `paths.rt_root` and feed
 downstream stages immediately — this is the primary, live path
-(`GMAO-GEOS_V3` has been on `direct_gmao_v3` since 2026-07-14, alongside the
-still-active `GMAO-GEOS_V2p1_5daily`; V3 is expected to eventually replace
-V2, but both currently run in parallel).
+(`GMAO-GEOS_V3` has been on `direct_gmao_v3` since 2026-07-14. It replaced
+`GMAO-GEOS_V2p1_5daily`, which GMAO retired; V2 was removed from the config in
+2026-10 and its archive is kept frozen -- nothing was deleted).
 
 The optional `ingest.shadow` block is a separate, additional validation
 layer: with `shadow.enabled: true`, the listed models are *also* fetched via

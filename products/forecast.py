@@ -379,7 +379,6 @@ def _resolve_panel_models(
         "ESRL-FIMr1p1",
         "RSMAS-CCSM4",
         "EMC-GEFSv12_CPC",
-        "GMAO-GEOS_V2p1",
         "GMAO-GEOS_V3",
         "NCEP-CFSv2",
         "ECCC-GEPS8",

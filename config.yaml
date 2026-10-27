@@ -11,7 +11,8 @@ models:
   - { group: ECCC, name: GEPS8,            vars: [pr, rlut, tas, ts, ua, va, zg], levels: [sfc, sfc, 2m, sfc, 200, 200, 500] }
   - { group: EMC,  name: GEFSv12_CPC,      vars: [pr, tas, zg],                   levels: [sfc, 2m, 500] }
   - { group: ESRL, name: FIMr1p1,          vars: [pr, rlut, tas, ts, ua, va, zg], levels: [sfc, sfc, 2m, sfc, 200, 200, 500] }
-  - { group: GMAO, name: GEOS_V2p1_5daily, vars: [pr, rlut, tas, ts, ua, va, zg], levels: [sfc, sfc, 2m, sfc, 200, 200, 500] }
+  # GMAO GEOS_V2p1_5daily was retired 2026-10 (GMAO ended V2.1; GEOS_V3 below replaces it).
+  # Its archive (local, Arraylake, GDEX, climo/percentiles) is kept frozen -- nothing was deleted.
   # vars/levels here cover the full real-time ingest (archiving) matrix -- GMAO's
   # NRT portal provides all 7. But the GEOS_V3 *hindcast* archive only has pr/tas
   # (see static/download_geos_v3_hindcast.py), so climo/percentiles -- and thus
@@ -24,8 +25,7 @@ models:
   - { group: NCEP, name: CFSv2,            vars: [tas, pr, zg, ua, ts, va],       levels: [2m, sfc, 500, 200, sfc, 200] }
   - { group: RSMAS,name: CCSM4,            vars: [pr, rlut, tas, ts, ua, va, zg], levels: [sfc, sfc, 2m, sfc, 200, 200, 500] }
 
-model_name_map:
-  GMAO-GEOS_V2p1_5daily: GEOS_V2p1
+model_name_map: {}   # no renamed models (GMAO-GEOS_V2p1_5daily -> GEOS_V2p1 was retired 2026-10)
 
 ingest:
   # Default source for model downloads. Keep as iridl for shadow-mode rollout.
@@ -39,7 +39,6 @@ ingest:
     ECCC-GEPS8: direct_eccc
     NCEP-CFSv2: direct_cfs
     EMC-GEFSv12_CPC: direct_gefs
-    GMAO-GEOS_V2p1_5daily: direct_gmao
     GMAO-GEOS_V3: direct_gmao_v3
     RSMAS-CCSM4: direct_rsmas
     ESRL-FIMr1p1: direct_esrl
@@ -51,7 +50,6 @@ ingest:
     rt_root: /data/esplab/subc-backup-direct-shadow
     model_source:
       ESRL-FIMr1p1: direct_esrl
-      GMAO-GEOS_V2p1_5daily: direct_gmao
       ECCC-GEPS8: direct_eccc
       RSMAS-CCSM4: direct_rsmas
   # Lookback window used by direct source discovery if provider listings expose
@@ -82,7 +80,7 @@ ingest:
     providers:
       esrl:
         url: ftp://gsdftp.fsl.noaa.gov/SubX-ESRL-FIMr1.1/
-      gmao:
+      gmao:   # GEOS V2.1 feed: retired 2026-10, no model uses direct_gmao any more (dormant)
         url: https://gmao.gsfc.nasa.gov/gmaoftp/gmaofcst/subx/GEOS_S2S_V2.1_fcst/pr1/
       gmao_v3:
         url: https://portal.nccs.nasa.gov/datashare/gmao/geos-s2s-3/NRT/SubC/
@@ -197,7 +195,7 @@ arraylake:
   input_root: /data/esplab/subc-backup
   batch_size: 1
   variables: [pr, tas, rlut, ts, ua, va, zg]
-  skip_models: [GMAO-GEOS_V3]
+  skip_models: []   # GMAO-GEOS_V3 enabled 2026-10 (replaces the retired V2.1; L capped to 45 leads, M padded to 15)
   # Optional per-model variable overrides. If omitted, arraylake.variables is used.
   # Example:
   #   model_vars:

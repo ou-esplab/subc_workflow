@@ -1,5 +1,13 @@
 # SubX climatology reference period
 
+> **Update 2026-10:** `GMAO-GEOS_V2p1_5daily` was retired (GMAO ended V2.1; `GMAO-GEOS_V3`
+> replaces it) and removed from `config.yaml`. The tables below describe how the 2001–2016
+> reference period was derived and are kept as the historical record, including V2's rows; its
+> existing climatology/percentile files are a frozen archive and were not regenerated or
+> deleted. New runs no longer include V2 (the 7 variables it supplied drop out of the climo
+> and percentile combo counts). Without V2, `RSMAS-CCSM4` (ends 2016-12-31) would be the
+> tightest late bound; the 2001–2016 period itself was left unchanged.
+
 ## Purpose
 
 Each of the 7 configured SubX models used to have its climatology (daily mean)

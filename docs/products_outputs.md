@@ -163,6 +163,6 @@ These are precomputed, hindcast-derived datasets reused across every weekly fore
 | ECCC-GEPS8 | Environment and Climate Change Canada | pr, rlut, tas, ts, ua, va, zg |
 | EMC-GEFSv12_CPC | NOAA/NCEP EMC | pr, tas, zg |
 | ESRL-FIMr1p1 | NOAA ESRL | pr, rlut, tas, ts, ua, va, zg |
-| GMAO-GEOS_V2p1_5daily | NASA GMAO | pr, rlut, tas, ts, ua, va, zg |
+| GMAO-GEOS_V3 | NASA GMAO | pr, tas (products; the hindcast portal only has these two). All 7 variables are archived. Replaced GEOS_V2p1_5daily, retired 2026-10 |
 | NCEP-CFSv2 | NOAA/NCEP | tas, pr, zg |
 | RSMAS-CCSM4 | Univ. of Miami RSMAS/COLA | pr, rlut, tas, ts, ua, va, zg |
