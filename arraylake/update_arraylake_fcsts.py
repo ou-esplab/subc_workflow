@@ -20,6 +20,7 @@ import zarr
 import logging
 import yaml
 import dask
+from normalize_forecast import normalize_forecast_dataset
 
 try:
     from tqdm import tqdm
@@ -417,6 +418,9 @@ for subx_model in models_to_process:
                         ds = xr.open_dataset(f, engine='netcdf4', chunks={})
                         # Select only the variable of interest from the dataset
                         ds = ds[[variable]]
+
+                        # Providers that vary L/M per date (GEOS_V3) are brought to the group's fixed shape
+                        ds = normalize_forecast_dataset(ds, this_model, datatype)
 
                         # For CFSv2 forecasts: expand malformed files with fewer than 4 start times
                         if this_model == 'CFSv2' and datatype == 'forecast':
