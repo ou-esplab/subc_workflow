@@ -641,6 +641,24 @@ for subx_model in models_to_process:
                 # Log the master pressure levels that were determined and that the reindexing was successful
                 logger.info(f"✓ Pressure levels: {master_P}")
 
+            # Appends never rewrite the stored L axis, so a source file whose L labels
+            # differ from the group's (provider time-stamp convention drift, e.g. a
+            # 1.0-based vs 0.5-based lead) is silently relabeled by step position.
+            # That has been correct so far, but surface it so a real shift is noticed.
+            if group_exists and 'L' in existing_ds.coords and 'L' in ds_allvars.coords:
+                stored_L = existing_ds['L'].values
+                incoming_L = ds_allvars['L'].values
+                if len(stored_L) != len(incoming_L):
+                    logger.warning(
+                        f"  ⚠ Incoming L has {len(incoming_L)} leads but the group stores {len(stored_L)}"
+                    )
+                elif not np.allclose(stored_L, incoming_L):
+                    logger.warning(
+                        f"  ⚠ Incoming L labels differ from the group's stored L "
+                        f"(incoming {incoming_L[0]}..{incoming_L[-1]}, stored {stored_L[0]}..{stored_L[-1]}); "
+                        f"data are appended by step position"
+                    )
+
         # If any exception occurs during the merging and preparation step,
         except Exception as e:
             # Log the error that occurred during merging and preparation and skip to the next model
