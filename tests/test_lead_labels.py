@@ -15,6 +15,7 @@ IRIDL_GRIDS = [
     ("CFS", 44, 0.5, 43.5),
     ("FIM", 32, 0.5, 31.5),
     ("GEFS", 34, 1.5, 34.5),
+    ("GMAO_V3", 75, 0.5, 74.5),  # real-time GEOS_V3 (variable-length: 63-90 leads)
 ]
 
 

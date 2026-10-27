@@ -536,6 +536,7 @@ _SUBX_FIRST_LEAD_DAYS: Dict[str, float] = {
     "CFS": 0.5,
     "FIM": 0.5,
     "GEFS": 1.5,
+    "GMAO_V3": 0.5,
 }
 
 
@@ -1039,11 +1040,10 @@ def _download_gmao_v3_to_subx(
         return ds
 
     def _lead_days_gmao_v3(ds: "xr.Dataset") -> "np.ndarray":
-        time_vals = pd.DatetimeIndex(ds["time"].values)
-        return np.array(
-            [(t - init_ts).total_seconds() / 86400.0 for t in time_vals],
-            dtype=np.float32,
-        )
+        # Raw time stamps differ by variable (daily means land on 0.5, 1.5, ... but
+        # rlut/ua/va/zg arrive at 0.375, 1.375, ...), so label by step like every other
+        # provider: IRIDL/hindcast convention, first daily mean at 0.5.
+        return _subx_lead_days("GMAO_V3", len(ds["time"]))
 
     with tempfile.TemporaryDirectory() as tmpdir:
         for m_idx, member in enumerate(members, start=1):
