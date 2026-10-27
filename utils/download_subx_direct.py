@@ -524,6 +524,28 @@ def _snap_grid_coords(ds: "xr.Dataset") -> "xr.Dataset":
     return ds.assign_coords(**coords) if coords else ds
 
 
+# First SubX lead label (days) per provider, i.e. the IRIDL / hindcast convention
+# (daily mean centred mid-day, 1-day spacing). Providers stamp each daily window
+# differently (ECCC/CFS/GEFS at the window end, FIM a day early), but the data are
+# step-for-step identical to the IRIDL copies, so L is labelled by step index
+# rather than by the raw stamp. The GEFSv12_CPC forecast deliberately starts at 1.5
+# (the real-time GEFS data has no first day; its hindcast starts at 0.5), so GEFS
+# keeps the IRIDL label instead of the 0.5 used for ECCC/CFS/FIM.
+_SUBX_FIRST_LEAD_DAYS: Dict[str, float] = {
+    "ECCC": 0.5,
+    "CFS": 0.5,
+    "FIM": 0.5,
+    "GEFS": 1.5,
+}
+
+
+def _subx_lead_days(provider: str, n_leads: int) -> "np.ndarray":
+    """Canonical SubX L (float32 days) for ``n_leads`` consecutive daily steps."""
+    import numpy as np
+
+    return (_SUBX_FIRST_LEAD_DAYS[provider] + np.arange(n_leads)).astype(np.float32)
+
+
 # ── ESRL-specific download helpers ────────────────────────────────────────────
 
 # Single-level variables: SubX var name → ESRL FTP filename prefix.
@@ -628,13 +650,9 @@ def _download_esrl_to_subx(
         m = re.match(r"days since (.+)", time_units.strip())
         if not m:
             raise ValueError(f"Unrecognised ESRL time units: {time_units!r}")
-        base_time = pd.Timestamp(m.group(1))
-        raw_days = ds["time"].values.astype(float)
-        return np.array(
-            [(base_time + pd.Timedelta(days=float(d)) - init_ts).total_seconds() / 86400.0
-             for d in raw_days],
-            dtype=np.float32,
-        )
+        # The raw ESRL stamp (-0.5, 0.5, ... 30.5, occasionally 1.0, ...) is a day
+        # earlier than the IRIDL/SubX label for the same data, so label by step.
+        return _subx_lead_days("FIM", len(ds["time"]))
 
     def _extract_var(ds: "xr.Dataset", fname: str) -> "xr.DataArray":
         if var in ds:
@@ -1166,8 +1184,9 @@ def _download_cfs_to_subx(
         return _snap_grid_coords(xr.open_dataset(tmp_file, decode_times=False))
 
     def _lead_days_cfs(ds: "xr.Dataset") -> "np.ndarray":
-        # time units are "days since {init_date} 00:00:00"; values are already lead days.
-        return ds["time"].values.astype(np.float32)
+        # Raw stamp is the 00Z-00Z window end (1.0 ... 44.0); IRIDL/hindcast label the
+        # same steps 0.5 ... 43.5.
+        return _subx_lead_days("CFS", len(ds["time"]))
 
     def _data_var(ds: "xr.Dataset") -> str:
         return list(ds.data_vars)[0]
@@ -1349,7 +1368,9 @@ def _download_gefs_to_subx(
         return ds.isel(time=slice(0, max_lead_days))
 
     def _lead_days_gefs(ds: "xr.Dataset") -> "np.ndarray":
-        return ds["time"].values.astype(np.float32)
+        # Raw stamp is the 00Z-00Z window end (1.0, 2.0, ...); IRIDL labels the same
+        # steps 1.5, 2.5, ... -- keep the IRIDL convention.
+        return _subx_lead_days("GEFS", len(ds["time"]))
 
     def _data_var(ds: "xr.Dataset") -> str:
         return list(ds.data_vars)[0]
@@ -1475,11 +1496,9 @@ def _download_eccc_members_to_subx(
             ref_str = ds["time"].attrs.get("reference_date", "")
             ref_ts = pd.Timestamp(ref_str.replace(" UTC", "")) if ref_str else init_ts
 
-            time_vals = pd.DatetimeIndex(ds["time"].values)
-            lead_days = np.array(
-                [(t - ref_ts).total_seconds() / 86400.0 for t in time_vals],
-                dtype=np.float32,
-            )
+            # Raw stamp is the window end (1.0 ... 39.0); IRIDL/hindcast label the same
+            # steps 0.5 ... 38.5.
+            lead_days = _subx_lead_days("ECCC", len(ds["time"]))
             if lead_days_ref is None:
                 lead_days_ref = lead_days
 
